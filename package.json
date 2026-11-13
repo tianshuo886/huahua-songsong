@@ -1,0 +1,10 @@
+{
+  "name": "plant-care",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "本机运行的植物养护看板：天气→浇水量/日照量→每日任务→拍照分析",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

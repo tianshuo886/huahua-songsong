@@ -1,0 +1,20 @@
+# 运行时数据（真实养护记录 + 照片，不进版本控制）
+data/
+
+# 下载的第三方二进制
+bin/
+
+# 访问口令
+.token
+
+# macOS
+.DS_Store
+
+# 日志
+*.log
+
+# 图片原始大图（页面用的是压缩版，这里只是留底）
+public/img/_source/
+
+# 未被选用的备选图标
+public/icons/candidates/
