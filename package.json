@@ -5,6 +5,8 @@
   "type": "module",
   "description": "本机运行的植物养护看板：天气→浇水量/日照量→每日任务→拍照分析",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "build:sites": "node scripts/prepare-sites-build.mjs",
+    "package:sites": "npm run build:sites && tar -czf site.tar.gz -C . dist"
   }
 }
