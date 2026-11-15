@@ -13,7 +13,12 @@ bin/
 # 日志
 *.log
 
-# 图片原始大图（页面用的是压缩版，这里只是留底）
+# Sites 构建产物与临时发布包
+dist/
+site.tar.gz
+
+# 图片原始大图（页面用的是 q85 压过的产品图，这里只是留底）
+# 产品图由 tools/reencode-img.py 从 _source 生成
 public/img/_source/
 
 # 未被选用的备选图标
