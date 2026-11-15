@@ -119,12 +119,16 @@ export function sunExposure({ samples, lat, lon, azimuth, parapetCm, potTopCm, d
  * 由日辐射总量粗估 DLI（mol/m²/d）：1 MJ/m² 全辐射 ≈ 2.1 mol PAR
  * 再用遮挡/散射透过率折算到盆的位置
  */
-export function estimateDli({ radiationMJ, directHours, daylightHours, covered }) {
+export function estimateDli({ radiationMJ, directHours, daylightHours, covered, diffuseIn, directIn }) {
   const dliOut = 2.1 * (radiationMJ || 0);
   const day = Math.max(1, daylightHours);
   const sunFrac = Math.min(1, directHours / day);
-  const diffuse = covered ? 0.22 : 0.32;     // 全阴处只剩散射
-  const direct = covered ? 0.62 : 0.85;      // 直射时透过率
+  // 散射透过率：默认值只是经验数，实测后可以由调用方传进来校准
+  const diffuse = Number.isFinite(diffuseIn) ? diffuseIn : (covered ? 0.22 : 0.32);
+  // 有直射时一定比纯散射更亮；露天阳台无玻璃无遮挡，两者都可接近 1
+  const direct = Number.isFinite(directIn)
+    ? Math.max(directIn, diffuse)
+    : Math.max(covered ? 0.62 : 0.85, diffuse + 0.05);
   const trans = diffuse + (direct - diffuse) * sunFrac;
-  return Math.round(dliOut * trans * 10) / 10;
+  return Math.round(dliOut * Math.min(1, trans) * 10) / 10;
 }
