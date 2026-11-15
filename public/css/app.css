@@ -199,6 +199,8 @@ ul{margin:0;padding:0;list-style:none}
 .task-meta{display:flex;align-items:center;gap:6px;margin-top:7px;flex-wrap:wrap}
 .badge{font-size:10.5px;padding:2px 7px;border-radius:99px;background:var(--paper-2);color:var(--ink-2);letter-spacing:.02em;white-space:nowrap;display:inline-flex;align-items:center}
 .badge img{border-radius:50%;object-fit:cover;flex:none}
+.task-emoji{font-size:16px;line-height:1;flex:none}
+.task-home-icon{width:18px;height:18px;border-radius:50%;object-fit:cover;flex:none;box-shadow:0 1px 3px rgba(60,80,70,.18);display:inline-block;vertical-align:middle;opacity:.9}
 .task-sun-icon{width:18px;height:18px;border-radius:50%;object-fit:cover;flex:none;box-shadow:0 1px 3px rgba(184,135,27,.25);display:inline-block;vertical-align:middle}
 .badge.green{background:var(--green-3);color:var(--green)}
 .badge.gold{background:var(--gold-2);color:#7a5b0f}
@@ -351,18 +353,20 @@ ul{margin:0;padding:0;list-style:none}
 
 /* ------------------------------------------------------------ 浮层 */
 .sheet-host{
-  position:fixed;inset:0;z-index:60;display:flex;align-items:flex-end;justify-content:center;
+  position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;
+  padding:18px;
   background:rgba(24,30,26,.42);backdrop-filter:blur(3px);
   animation:fade .18s ease;
 }
 @keyframes fade{from{opacity:0}to{opacity:1}}
 .sheet{
-  width:100%;max-width:520px;max-height:88vh;overflow:auto;
-  background:var(--card);border-radius:20px 20px 0 0;
-  padding:18px 18px calc(22px + env(safe-area-inset-bottom));
-  animation:rise .26s cubic-bezier(.2,.8,.2,1);
-  box-shadow:0 -8px 40px rgba(0,0,0,.2);
+  width:100%;max-width:520px;max-height:82vh;overflow:auto;
+  background:var(--card);border-radius:20px;
+  padding:18px 18px 20px;
+  animation:pop .24s cubic-bezier(.2,.8,.2,1);
+  box-shadow:0 18px 60px -18px rgba(0,0,0,.45);
 }
+@keyframes pop{from{transform:translateY(10px) scale(.98);opacity:.6}to{transform:none;opacity:1}}
 @keyframes rise{from{transform:translateY(18px);opacity:.6}to{transform:none;opacity:1}}
 .sheet h3{font-size:16px;margin-bottom:4px}
 .sheet .sub{font-size:12.5px;color:var(--muted);margin-bottom:14px}
@@ -379,6 +383,69 @@ body:has(.sheet-host) .toast-host{top:70px;bottom:auto}
 .toast.ok{background:#24503a}
 
 /* ------------------------------------------------------------ 大屏 */
+/* 今日顶部：画卷 + 日期面板 */
+.hero-row{display:flex;flex-direction:column;gap:14px}
+.day-panel{display:flex;flex-direction:column;gap:12px}
+.dp-top{display:flex;align-items:flex-end;justify-content:space-between;gap:8px}
+.dp-date{font-family:var(--serif);font-size:44px;line-height:.9;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.dp-date span{font-family:var(--sans);font-size:12px;color:var(--muted);margin-left:6px;letter-spacing:0}
+.dp-week{font-size:12.5px;color:var(--ink-2);text-align:right;line-height:1.3}
+.dp-week small{display:block;font-size:10.5px;color:var(--muted);margin-top:2px}
+.dp-top-right{display:flex;align-items:center;gap:10px}
+.dp-cal{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;font-size:11px;text-align:center}
+.dp-cal i{font-style:normal;color:var(--muted);font-size:10px;padding-bottom:2px}
+.dp-cal b{font-weight:400;padding:4px 0;border-radius:7px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.dp-cal b.on{background:var(--green);color:#fff;font-weight:600}
+.dp-cal-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:-2px}
+.dp-cal-head b{font-size:11px;font-weight:600;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.dp-cal-head button{border:0;background:none;color:var(--muted);font-size:14px;line-height:1;padding:2px 6px;border-radius:6px;cursor:pointer}
+.dp-cal-head button:hover{background:var(--paper-2);color:var(--ink)}
+.dp-cal b.cal-day{position:relative;cursor:pointer;padding-bottom:7px}
+.dp-cal b.cal-day:hover{background:var(--paper-2)}
+.dp-cal b.cal-day.pad{cursor:default;pointer-events:none}
+.dp-cal b.cal-day::after{content:'';position:absolute;left:50%;bottom:1.5px;width:4px;height:4px;margin-left:-2px;border-radius:50%;background:transparent}
+.dp-cal b.cal-day.missed::after{background:var(--red)}
+
+/* 待办历史：日历点开的那天的清单 + 「以前没做完的」 */
+.hist-list{display:flex;flex-direction:column;margin-top:4px}
+.hist-row{display:flex;align-items:center;gap:8px;width:100%;text-align:left;font-family:inherit;font-size:12px;color:var(--ink);background:none;border:0;border-bottom:1px dashed var(--line-2);padding:6px 4px}
+.hist-row:last-child{border-bottom:none}
+button.hist-row{cursor:pointer;border-radius:8px}
+button.hist-row:hover{background:var(--paper-2)}
+.hist-time{flex:none;width:46px;white-space:nowrap;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+.hist-row.overdue .hist-time{width:62px}
+.hist-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.hist-main b{font-weight:500;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hist-main span{font-size:10.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hist-tag{flex:none;font-size:10.5px;color:var(--muted)}
+.hist-row .tick{flex:none;margin-left:2px;width:22px;height:22px}
+.hist-row.ok .hist-tag{color:var(--green)}
+.hist-row.miss .hist-tag{color:var(--red)}
+.hist-row.ok .hist-main b{color:var(--muted)}
+.dp-rows{display:flex;flex-direction:column;gap:0;margin-top:2px}
+.dp-row{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px dashed var(--line-2)}
+.dp-row:last-child{border-bottom:none}
+.dp-row span{color:var(--muted)}
+.dp-row b{font-weight:600;font-variant-numeric:tabular-nums}
+.dp-alert{display:flex;align-items:center;gap:7px;padding:7px 9px;background:var(--blue-2);border-radius:9px;font-size:11.5px;color:var(--blue);line-height:1.4}
+.dp-alert img{width:20px;height:20px;border-radius:50%;object-fit:cover;flex:none}
+.dp-foot{font-size:11px;color:var(--muted);border-top:1px dashed var(--line);padding-top:8px}
+
+/* 手机：不放日历，只留天气与日期一行，别把花挤下去 */
+@media (max-width:1099px){
+  .day-panel{gap:8px;padding:13px 14px}
+  .dp-cal,.dp-cal-head{display:none}
+  .dp-date{font-size:36px}
+  .day-panel{overflow:hidden;min-width:0}
+  .dp-top,.dp-top-right{min-width:0}
+  .dp-week{white-space:nowrap}
+  .dp-rows{display:grid;grid-template-columns:1fr 1fr;gap:0 14px;margin-top:2px;min-width:0}
+  .dp-row{border-bottom:none;padding:3px 0;font-size:11.5px;min-width:0;gap:6px}
+  .dp-row span,.dp-row b{min-width:0;white-space:normal;overflow-wrap:anywhere}
+  .dp-row:nth-child(n+5){display:none}
+  .dp-foot{border-top:1px dashed var(--line);padding-top:7px}
+}
+
 @media (min-width:900px){
   body{font-size:15px}
   .col-hide{display:table-cell}
@@ -405,6 +472,13 @@ body:has(.sheet-host) .toast-host{top:70px;bottom:auto}
   .tab svg{width:19px;height:19px}
   .top{padding:16px 32px;justify-content:flex-end}
   .top .brand{display:none}
+  .hero-banner{width:100%;max-width:780px;margin:0 auto}
+}
+
+@media (min-width:1100px){
+  .hero-row{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px;align-items:stretch}
+  .hero-row .hero-banner{max-width:none;margin:0;height:100%}
+  .hero-row .day-panel{justify-content:space-between}
   .wx{display:grid;grid-template-columns:1fr auto;column-gap:22px;align-items:center}
   .wx-stats{grid-template-columns:repeat(3,auto);gap:10px;margin-top:0;min-width:250px}
   .wx-hint{grid-column:1/-1}
@@ -434,7 +508,7 @@ details summary::-webkit-details-marker{display:none}
 .hero-banner{
   position:relative;background:var(--paper-2);border:1px solid var(--line);
   border-radius:var(--r);overflow:hidden;box-shadow:var(--shadow);
-  aspect-ratio:16/9;max-height:268px;
+  aspect-ratio:16/9;width:100%;
 }
 .hero-banner img{
   position:absolute;inset:0;width:100%;height:100%;
@@ -470,6 +544,39 @@ details summary::-webkit-details-marker{display:none}
 .seg.mini{width:auto;flex:none;padding:2px;font-size:11.5px}
 .seg.mini button{flex:0 0 auto;padding:5px 10px;font-size:11.5px;white-space:nowrap}
 
+.place{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px dashed var(--line-2)}
+.place b{font-size:13.5px;font-weight:600}
+.place span{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+.place em{font-style:normal;font-family:var(--serif);font-size:20px;line-height:1;font-variant-numeric:tabular-nums}
+
+/* 周末寄放 */
+.wk-hero{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:2px 0 10px}
+.wk-pickname{font-family:var(--serif);font-size:26px;line-height:1.1;letter-spacing:-.01em;color:var(--green)}
+.wk-herowhy{flex:1;min-width:200px;font-size:12.5px;line-height:1.6;color:var(--ink-2)}
+.wk-conds{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.wk-conds span{font-size:11.5px;padding:4px 9px;border-radius:99px;background:var(--paper-2);color:var(--ink-2);font-variant-numeric:tabular-nums}
+.wk-conds span:first-child{background:none;color:var(--muted);padding-left:0}
+.wk-conds span.close{background:#fbf1dc;color:var(--gold)}
+.wk-conds span.cold{background:var(--blue-2);color:var(--blue)}
+.wk-opts{display:flex;flex-direction:column;gap:7px}
+.wk-opt{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 12px;border-radius:12px;background:var(--paper-2);border:1px solid transparent}
+.wk-opt.on{background:var(--green-3);border-color:rgba(63,125,91,.28)}
+.wk-opt.off{opacity:.62}
+.wk-opt.off.on{opacity:1}
+.wk-opt b{font-size:13.5px;font-weight:600}
+.wk-opt span{display:block;font-size:11px;color:var(--muted);margin-top:2px;line-height:1.5}
+.wk-opt.off span{color:var(--red)}
+.wk-opt em{font-style:normal;font-family:var(--serif);font-size:17px;line-height:1;flex:none;font-variant-numeric:tabular-nums;color:var(--ink-2)}
+.wk-pick{font-style:normal;margin-left:7px;font-size:10px;letter-spacing:.06em;color:var(--green-2);border:1px solid rgba(63,125,91,.4);border-radius:99px;padding:1px 7px;vertical-align:1px}
+.wk-flow{display:grid;grid-template-columns:1fr;gap:6px;margin-top:12px;padding-top:11px;border-top:1px dashed var(--line)}
+.wk-flow div{display:flex;gap:10px;font-size:12px;line-height:1.55}
+.wk-flow b{flex:none;min-width:76px;font-weight:600;color:var(--ink)}
+.wk-flow span{color:var(--ink-2)}
+@media (min-width:900px){
+  .wk-flow{grid-template-columns:repeat(3,1fr);gap:12px}
+  .wk-flow div{flex-direction:column;gap:2px}
+}
+
 .spot-rows{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
 .spot-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;background:var(--paper-2);border-radius:12px}
 .spot-row.off{opacity:.55}
@@ -480,6 +587,10 @@ details summary::-webkit-details-marker{display:none}
 .spot-val small{display:block;font-size:10.5px;color:var(--muted);margin-top:1px}
 
 /* 天气与状态小图 */
+.wx-icon-wrap{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:none;vertical-align:middle}
+.wx-emoji{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;line-height:1}
+.wx-icon-wrap img{position:relative;z-index:1}
+
 .wx-icon-img{
   border-radius:50%;object-fit:cover;vertical-align:middle;flex:none;
   box-shadow:0 0 0 1px rgba(0,0,0,.05), 0 1px 3px rgba(0,0,0,.06);display:inline-block;

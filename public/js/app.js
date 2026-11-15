@@ -1,4 +1,5 @@
 import * as M from './model.js';
+import { sunPosition } from './solar.js';
 
 /* ══════════════════════════════════════════════════════ 基础 */
 const $ = (s, el = document) => el.querySelector(s);
@@ -30,7 +31,7 @@ const SAVED_INPUT = (() => {
 
 const S = {
   state: null, config: null, weather: null, idx: null, readonly: false,
-  route: 'today', plans: {}, suns: {}, tasks: [], today: M.localDate(),
+  route: 'today', plans: {}, suns: {}, tasks: [], today: M.localDate(), calMonth: null,
   busy: '', err: '', sheet: null, syncing: false, dirty: false,
 };
 
@@ -51,20 +52,54 @@ const ICON = {
   x: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
 };
 
+/** 老数据只剩 kind 时，用它补一句像样的标题，别把「搬去晒」当成任务名 */
+function kindTitle(kind, plantId) {
+  const name = (plantId && plantByIdSafe(plantId)?.name) || '花';
+  const map = {
+    water: `给${name}浇透（浇到底孔出水）`,
+    prep: '接一壶水放着回温',
+    check: `摸一下${name}的土`,
+    moveOut: '把两盆搬回阳台',
+    moveIn: '把两盆搬进走廊',
+    toSun: '把两盆搬到西阳台晒太阳',
+    toHome: '把两盆搬回走廊',
+    bloom: `扒开${name}的花苞查灰霉`,
+    photo: `给${name}拍一张`,
+    fert: `给${name}施一次稀薄肥`,
+    leach: `给${name}彻底浇透冲盐`,
+    measure: '测一下走廊和两个阳台的光照',
+    light: '测一下走廊和两个阳台的光照',
+    weekendOut: '下班前看一眼周末放哪儿',
+    weekendBack: '周一搬回工位前先看一遍',
+    weekendPrep: '周末前把水接好',
+    reminder: '提醒',
+  };
+  return map[kind] || (KIND_META[kind]?.label ? `${KIND_META[kind].label}` : '完成过');
+}
+
+/** 历史记录里可能引用已删掉的植株，别让它抛错 */
+function plantByIdSafe(id) {
+  return (S.state?.plants || []).find((p) => p.id === id) || null;
+}
+
 const KIND_META = {
-  water: { label: '浇水', cls: 'green', icon: 'drop' },
-  prep: { label: '备水', cls: 'blue', icon: 'drop' },
-  check: { label: '探土', cls: '', icon: 'drop' },
-  moveIn: { label: '搬进屋', cls: 'blue', icon: 'move' },
-  moveOut: { label: '晒太阳', cls: 'gold', icon: 'sun', img: '/img/weather/icon_weather_sunny.jpg' },
+  water: { label: '浇水', cls: 'green', icon: 'drop', img: '/img/actions/icon_action_watering.jpg' },
+  prep: { label: '备水', cls: 'blue', icon: 'drop', img: '/img/actions/icon_action_water_prep.jpg' },
+  check: { label: '探土', cls: '', icon: 'drop', img: '/img/actions/icon_action_soil_check.jpg' },
+  moveIn: { label: '搬进屋', cls: 'blue', icon: 'move', img: '/img/actions/icon_action_move.jpg' },
+  moveOut: { label: '晒太阳', cls: 'gold', icon: 'sun', img: '/img/actions/icon_action_sun.jpg' },
   bloom: { label: '查灰霉', cls: 'gold', icon: 'flower' },
   photo: { label: '拍照', cls: '', icon: 'camera' },
   fert: { label: '施肥', cls: '', icon: 'flask' },
   leach: { label: '冲盐', cls: 'blue', icon: 'drop' },
-  waterManual: { label: '浇水', cls: 'green', icon: 'drop' },
-  measure: { label: '测光', cls: 'blue', icon: 'sun', img: '/img/weather/icon_weather_sunny.jpg' },
-  toSun: { label: '搬去晒', cls: 'gold', icon: 'sun', img: '/img/weather/icon_weather_sunny.jpg' },
-  toHome: { label: '搬回来', cls: '', icon: 'move' },
+  waterManual: { label: '浇水', cls: 'green', icon: 'drop', img: '/img/actions/icon_action_watering.jpg' },
+  measure: { label: '测光', cls: 'blue', icon: 'sun', img: '/img/actions/icon_action_sun.jpg' },
+  light: { label: '测光', cls: 'blue', icon: 'sun', img: '/img/actions/icon_action_sun.jpg' },
+  toSun: { label: '搬去晒', cls: 'gold', icon: 'sun', img: '/img/actions/icon_action_sun.jpg' },
+  toHome: { label: '搬回来', cls: '', icon: 'move', img: '/img/actions/icon_action_move.jpg' },
+  weekendOut: { label: '周末寄放', cls: 'blue', icon: 'move', img: '/img/actions/icon_action_move.jpg' },
+  weekendBack: { label: '搬回工位', cls: '', icon: 'move', img: '/img/actions/icon_action_move.jpg' },
+  weekendPrep: { label: '周末准备', cls: 'blue', icon: 'drop', img: '/img/actions/icon_action_water_prep.jpg' },
 };
 
 /* ══════════════════════════════════════════════════════ 视觉插画与图标映射 */
@@ -97,19 +132,31 @@ function plantBadge(plantId, fallbackEmoji = '', size = 20) {
   return fallbackEmoji ? `<span style="margin-right:4px">${fallbackEmoji}</span>` : '';
 }
 
+const WX_EMOJI = { 晴: '☀️', 少云: '🌤', 阴: '☁️', 雾: '🌫', 毛毛雨: '🌦', 雨: '🌧', 雪: '🌨', 阵雨: '🌧', 雷雨: '⛈', 多云: '⛅' };
+
 function weatherIconImg(code, size = 20) {
   const c = Number(code);
-  let file = 'icon_weather_sunny.jpg';
-  if (c === 0) file = 'icon_weather_sunny.jpg';
-  else if (c <= 2) file = 'icon_weather_cloudy.jpg';
-  else if (c === 3) file = 'icon_weather_overcast.jpg';
-  else if (c >= 45 && c <= 48) file = 'icon_weather_fog.jpg';
-  else if (c >= 51 && c <= 57) file = 'icon_weather_drizzle.jpg';
-  else if (c >= 61 && c <= 67) file = 'icon_weather_drizzle.jpg';
-  else if (c >= 80 && c <= 82) file = 'icon_weather_cloudy.jpg';
-  else file = 'icon_weather_overcast.jpg';
+  let file = 'sunny';
+  if (c === 0) file = 'sunny';
+  else if (c <= 2) file = 'cloudy';
+  else if (c === 3) file = 'overcast';
+  else if (c >= 45 && c <= 48) file = 'fog';
+  else if (c >= 51 && c <= 57) file = 'drizzle';
+  else if (c >= 61 && c <= 67) file = 'rain';
+  else if (c >= 71 && c <= 77) file = 'snow';
+  else if (c >= 80 && c <= 82) file = 'shower';
+  else if (c >= 95) file = 'thunder';
+  else file = 'overcast';
 
-  return `<img class="wx-icon-img" src="/img/weather/${file}" alt="${M.weatherWord(code)}" style="width:${size}px;height:${size}px">`;
+  const word = M.weatherWord(code);
+  const emoji = WX_EMOJI[word] || '☁️';
+  // 新图还没生成时先借用最接近的一张；再不行才退回 emoji，绝不留裂图
+  const backup = ['rain', 'shower'].includes(file) ? 'drizzle' : 'overcast';
+  const onerr = `if(this.dataset.fb){this.remove()}else{this.dataset.fb=1;this.src='/img/weather/icon_weather_${backup}.jpg'}`;
+  return `<span class="wx-icon-wrap" style="width:${size}px;height:${size}px">
+    <span class="wx-emoji" aria-hidden="true">${emoji}</span>
+    <img class="wx-icon-img" src="/img/weather/icon_weather_${file}.jpg" alt="${word}" style="width:${size}px;height:${size}px" onerror="${onerr}">
+  </span>`;
 }
 
 /* ══════════════════════════════════════════════════════ 网络 */
@@ -178,6 +225,10 @@ async function loadAll({ silent = false } = {}) {
     }
     S.idx = M.indexWeather(S.weather);
     compute();
+    // 待办历史：老数据从 tasksDone 回填一次，往后每次加载都把新算出来的任务记下来
+    const filled = backfillHistory();
+    const recorded = recordTaskHistory();
+    if (!S.readonly && (filled || recorded)) saveState();
     S.err = S.weather?.fallback ? '当前用的是占位天气（取不到实时预报）' : '';
     const rev = state.revisedAt;
     S.syncing = false;
@@ -189,24 +240,61 @@ async function loadAll({ silent = false } = {}) {
   }
 }
 
+/**
+ * 把"勾任务"也当成一次搬动：trip|日期|toSun / toHome 的完成时间就是搬动时间。
+ * 这样旧的勾选习惯不用改，光照直接按真实时间算；取消勾选也会把记录撤掉。
+ */
+function syncMoveLog(st) {
+  const site = st?.site;
+  if (!site) return;
+  const log = Array.isArray(site.moveLog) ? site.moveLog : (site.moveLog = []);
+  const wanted = new Map();
+  for (const [id, v] of Object.entries(st.tasksDone || {})) {
+    const m = /^trip\|(\d{4}-\d{2}-\d{2})\|(toSun|toHome)$/.exec(id);
+    if (!m || !v?.done || !v.at) continue;
+    const at = new Date(v.at).getTime();
+    if (!Number.isFinite(at)) continue;
+    wanted.set(id, { at: v.at, to: m[2] === 'toSun' ? 'trip' : 'home' });
+  }
+  // 任务被取消勾选 → 对应的搬动记录也撤掉
+  for (let i = log.length - 1; i >= 0; i--) {
+    const src = log[i]?.src;
+    if (typeof src === 'string' && src.startsWith('task:') && !wanted.has(src.slice(5))) log.splice(i, 1);
+  }
+  const have = new Set(log.map((e) => e?.src).filter(Boolean));
+  for (const [id, mv] of wanted) {
+    if (have.has('task:' + id)) continue;
+    const at = new Date(mv.at).getTime();
+    // 手动点过同一趟（±10 分钟、同方向）就不重复记
+    const dup = log.some((e) => e?.to === mv.to
+      && Number.isFinite(new Date(e.at).getTime())
+      && Math.abs(new Date(e.at).getTime() - at) < 10 * 60000);
+    if (!dup) log.push({ ...mv, src: 'task:' + id });
+  }
+  log.sort((a, b) => new Date(a.at) - new Date(b.at));
+  site.moveLog = log.slice(-500);
+}
+
 function compute() {
   const st = S.state;
   S.today = M.localDate();
+  syncMoveLog(st);
   S.plans = {};
   S.suns = {};
   for (const p of st.plants) {
-    S.plans[p.id] = M.waterPlan(p, S.idx, st.settings);
+    S.plans[p.id] = M.waterPlan(p, S.idx, st.settings, Date.now(), st.site);
     S.suns[p.id] = M.sunPlan(p, S.idx, st.site, S.today, st.location.lat, st.location.lon);
   }
   S.tasks = M.buildTasks({
     plants: st.plants, wIndex: S.idx, site: st.site,
     settings: st.settings, horizonDays: 7,
-    photos: st.photos || [], doneMap: st.tasksDone || {},
+    photos: st.photos || [], doneMap: st.tasksDone || {}, reminders: st.reminders || [],
   });
 }
 
 async function saveState() {
   if (!S.state) return;
+  syncMoveLog(S.state);
   S.dirty = true;
   try {
     await api('/api/state', { method: 'PUT', body: S.state });
@@ -220,7 +308,13 @@ async function saveState() {
 function render() {
   const app = $('#app');
   if (!S.state || !S.idx) {
-    app.innerHTML = `<div class="boot"><span class="boot-dot"></span>${S.err ? '连不上服务：' + esc(S.err) : '正在读取花况…'}</div>`;
+    app.innerHTML = `<div class="boot" style="flex-direction:column;gap:14px">
+      <div style="display:flex;align-items:center;gap:10px"><span class="boot-dot"></span>${S.err ? '连不上服务：' + esc(S.err) : '正在读取花况…'}</div>
+      ${S.err ? '<button class="btn ghost sm" id="retryBoot">重试</button>' : ''}
+      ${S.err ? '<div class="note" style="font-size:11px;text-align:center;line-height:1.7">一直失败的话：先确认手机的 Tailscale 已连接，<br>或改用同一 WiFi 下的局域网地址</div>' : ''}
+    </div>`;
+    const rb = document.getElementById('retryBoot');
+    if (rb) rb.onclick = () => { S.err = ''; render(); loadAll(); };
     return;
   }
   const pending = pendingTasks();
@@ -298,14 +392,501 @@ function view() {
   }
 }
 
-/* ══════════════════════════════════════════════════════ 今日 */
+/* ══════════════════════════════════════════════════════ 今日与杭电四季画卷 */
+const CAMPUS_BANNERS = [
+  // ── 秋季 ──
+  {
+    id: 'au_10th_bldg',
+    season: 'autumn',
+    src: '/img/scenes/scene_au_10th_bldg.jpg',
+    tag: '10教秋景 · 杭电',
+    sub: '秋木斑斓 · 远眺圆孔综合楼',
+  },
+  {
+    id: 'au_wentian_ginkgo',
+    season: 'autumn',
+    src: '/img/scenes/scene_au_wentian_ginkgo.jpg',
+    tag: '问天广场 · 银杏金雨',
+    sub: '三省石柱 · 金叶漫卷大草坪',
+  },
+  {
+    id: 'au_brick_balcony',
+    season: 'autumn',
+    src: '/img/scenes/scene_au_brick_balcony.jpg',
+    tag: '红砖秋阳 · 阳台花语',
+    sub: '红砖实壁 · 漫天银杏与温润斜阳',
+  },
+  {
+    id: 'balcony_classic',
+    season: 'autumn',
+    src: '/img/scenes/scene_balcony_hero.jpg',
+    tag: '钱塘 · 下沙',
+    sub: '红砖栏板 · 走廊与阳台的花',
+  },
+  // ── 冬季 ──
+  {
+    id: 'wi_10th_bldg',
+    season: 'winter',
+    src: '/img/scenes/scene_wi_10th_bldg.jpg',
+    tag: '10教冬眺 · 杭电',
+    sub: '晨雾红砖 · 长寿花爆花傲立',
+  },
+  {
+    id: 'wi_corridor_haven',
+    season: 'winter',
+    src: '/img/scenes/scene_wi_corridor_haven.jpg',
+    tag: '实验走廊 · 机械温室',
+    sub: '精密齿轮旁的温暖避寒角',
+  },
+  {
+    id: 'wi_snow_wentian',
+    season: 'winter',
+    src: '/img/scenes/scene_wi_snow_wentian.jpg',
+    tag: '问天初雪 · 杭电',
+    sub: '石碑落雪 · 草坪白雪皑皑',
+  },
+  // ── 春季 ──
+  {
+    id: 'sp_10th_bldg',
+    season: 'spring',
+    src: '/img/scenes/scene_sp_10th_bldg.jpg',
+    tag: '10教春眺 · 杭电',
+    sub: '新绿抽芽 · 窗台水培绿根嫩',
+  },
+  {
+    id: 'sp_moon_lake',
+    season: 'spring',
+    src: '/img/scenes/scene_sp_moon_lake.jpg',
+    tag: '月雅春影 · 月雅湖',
+    sub: '雅湖云影 · 垂柳桃花伴水廊',
+  },
+  {
+    id: 'sp_gate_rainbow',
+    season: 'spring',
+    src: '/img/scenes/scene_sp_gate_rainbow.jpg',
+    tag: '长虹揽月 · 南大门',
+    sub: '巨拱擎天 · 迎宾花带与春风',
+  },
+  // ── 夏季 ──
+  {
+    id: 'su_ufo_gym',
+    season: 'summer',
+    src: '/img/scenes/scene_su_ufo_gym.jpg',
+    tag: '巨碟邀星 · 体育馆',
+    sub: 'UFO飞碟 · 樟树浓荫吃西瓜',
+  },
+  {
+    id: 'su_library_lotus',
+    season: 'summer',
+    src: '/img/scenes/scene_su_library_lotus.jpg',
+    tag: '书海风荷 · 图书馆',
+    sub: '荷池粉荷 · 书香风荷水波漾',
+  },
+  {
+    id: 'su_wentian_lawn',
+    season: 'summer',
+    src: '/img/scenes/scene_su_wentian_lawn.jpg',
+    tag: '问天盛夏 · 问天广场',
+    sub: '三省问天 · 绿茵烈日 HELLO HDU',
+  },
+  // ── 节日与节气 ──
+  {
+    id: 'fe_new_year',
+    type: 'festival',
+    src: '/img/scenes/scene_fe_new_year.jpg',
+    tag: '元旦迎新 · 杭电',
+    sub: '日历翻开新篇章 · 新年快乐',
+    match: (m, d) => m === 1 && (d >= 1 && d <= 3),
+  },
+  {
+    id: 'fe_spring_festival',
+    type: 'festival',
+    src: '/img/scenes/scene_fe_spring_festival.jpg',
+    tag: '新春祥瑞 · 杭电',
+    sub: '大红灯笼高高挂 · 舞狮迎春',
+    match: (m, d) => (m === 1 && d >= 25) || (m === 2 && d <= 12),
+  },
+  {
+    id: 'fe_lantern_festival',
+    type: 'festival',
+    src: '/img/scenes/scene_fe_lantern_festival.jpg',
+    tag: '元宵佳节 · 月雅湖',
+    sub: '水漾花灯 · 热气腾腾小汤圆',
+    match: (m, d) => m === 2 && (d >= 13 && d <= 17),
+  },
+  {
+    id: 'fe_dragon_boat',
+    type: 'festival',
+    src: '/img/scenes/scene_fe_dragon_boat.jpg',
+    tag: '端午安康 · 杭电',
+    sub: '五彩丝线系长嘴 · 软萌小绿粽',
+    match: (m, d) => (m === 5 && d >= 25) || (m === 6 && d <= 10),
+  },
+  {
+    id: 'fe_qixi',
+    type: 'festival',
+    src: '/img/scenes/scene_fe_qixi.jpg',
+    tag: '七夕相会 · 杭电星汉',
+    sub: '银河脉脉 · 枝叶轻触心相印',
+    match: (m, d) => (m === 8 && d >= 15 && d <= 25),
+  },
+  {
+    id: 'fe_mid_autumn',
+    type: 'festival',
+    src: '/img/scenes/scene_fe_mid_autumn.jpg',
+    tag: '中秋佳节 · 杭电月圆',
+    sub: '月穿圆孔楼 · 并坐品饼赏清辉',
+    match: (m, d) => (m === 9 && d >= 15 && d <= 25) || (m === 10 && d <= 5),
+  },
+  {
+    id: 'fe_commencement',
+    type: 'festival',
+    src: '/img/scenes/scene_fe_commencement.jpg',
+    tag: '毕业迎新 · 杭电逐梦',
+    sub: '学士帽彩带 · 迎新草坪逐梦启程',
+    match: (m, d) => (m === 6 && d >= 15 && d <= 30) || (m === 9 && d >= 1 && d <= 15),
+  },
+  {
+    id: 'ts_spring_begins',
+    type: 'solarterm',
+    src: '/img/scenes/scene_ts_spring_begins.jpg',
+    tag: '立春迎新 · 万物苏萌',
+    sub: '草坪破土嫩芽初探 · 春阳微醺',
+    match: (m, d) => m === 2 && (d >= 3 && d <= 5),
+  },
+  {
+    id: 'ts_autumn_equinox',
+    type: 'solarterm',
+    src: '/img/scenes/scene_ts_autumn_equinox.jpg',
+    tag: '秋分平分 · 昼夜均半',
+    sub: '半树金黄半树绿 · 金风送爽',
+    match: (m, d) => m === 9 && (d >= 22 && d <= 24),
+  },
+  {
+    id: 'ts_frost_descent',
+    type: 'solarterm',
+    src: '/img/scenes/scene_ts_frost_descent.jpg',
+    tag: '霜降初寒 · 露结为霜',
+    sub: '红砖晶莹小初霜 · 添衣入室',
+    match: (m, d) => m === 10 && (d >= 23 && d <= 24),
+  },
+  {
+    id: 'ts_winter_solstice',
+    type: 'solarterm',
+    src: '/img/scenes/scene_ts_winter_solstice.jpg',
+    tag: '冬至温情 · 日南之至',
+    sub: '热饺初熟 · 长寿花爆花迎春',
+    match: (m, d) => m === 12 && (d >= 21 && d <= 23),
+  },
+];
+
+function currentSeason(dateStr = S.today || M.localDate()) {
+  const m = Number(String(dateStr).slice(5, 7));
+  if (m >= 3 && m <= 5) return 'spring';
+  if (m >= 6 && m <= 8) return 'summer';
+  if (m >= 9 && m <= 11) return 'autumn';
+  return 'winter';
+}
+
+const SEASON_CN = { spring: '春', summer: '夏', autumn: '秋', winter: '冬' };
+
+/** 本季的画卷池：四季图才有 season，节日/节气图不在池子里，换一张不会跳到它们 */
+function seasonPool(season = currentSeason()) {
+  return CAMPUS_BANNERS.filter((b) => b.season === season);
+}
+
+function getCurrentBanner() {
+  if (S.bannerIdx != null && CAMPUS_BANNERS[S.bannerIdx]) {
+    return CAMPUS_BANNERS[S.bannerIdx];
+  }
+  const dateStr = S.today || M.localDate();
+  const m = Number(dateStr.slice(5, 7));
+  const d = Number(dateStr.slice(8, 10));
+
+  const special = CAMPUS_BANNERS.find((b) => b.match && b.match(m, d));
+  if (special) return special;
+
+  const seasonal = seasonPool(currentSeason(dateStr));
+  if (seasonal.length) {
+    return seasonal[d % seasonal.length];
+  }
+  return CAMPUS_BANNERS[0];
+}
+
 function heroBanner() {
-  return `<div class="hero-banner">
-    <img src="/img/scenes/scene_balcony_hero.jpg" alt="阳台与走廊一角">
+  const b = getCurrentBanner();
+  // 正在看哪一季，就在哪一季里换；节日/节气图没有 season，回落到日历季节
+  const season = b.season || currentSeason();
+  const pool = seasonPool(season);
+  return `<div class="hero-banner" data-act="nextBanner" title="点击切换${SEASON_CN[season]}季校园画卷（${pool.length} 幅）" style="cursor:pointer">
+    <img src="${b.src}" alt="${esc(b.tag)}">
     <div class="hero-bar">
-      <span class="hero-tag">钱塘 · 下沙</span>
-      <span class="hero-sub">红砖栏板 · 走廊与阳台的花</span>
+      <div style="display:flex;align-items:center;gap:8px;min-width:0">
+        <span class="hero-tag">${esc(b.tag)}</span>
+        <span class="hero-sub" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(b.sub)}</span>
+      </div>
+      <span class="hero-switch-hint" style="flex:none;font-size:10.5px;opacity:.9;background:rgba(255,255,255,.18);backdrop-filter:blur(4px);padding:3px 8px;border-radius:6px;transition:.15s">⇄ 换一张</span>
     </div>
+  </div>`;
+}
+
+function sunTimes(dateStr) {
+  const base = new Date(dateStr + 'T00:00:00+08:00').getTime();
+  const { lat, lon } = S.state.location;
+  let rise = null, set = null, prev = null;
+  for (let m = 0; m <= 1440; m += 10) {
+    const pos = sunPosition(base + m * 60000, lat, lon);
+    if (prev) {
+      if (prev.alt <= 0 && pos.alt > 0 && rise == null) rise = m;
+      if (prev.alt > 0 && pos.alt <= 0 && rise != null) set = m;
+    }
+    prev = pos;
+  }
+  const hm = (v) => (v == null ? '–' : `${pad(Math.floor(v / 60))}:${pad(v % 60)}`);
+  return { rise: hm(rise), set: hm(set) };
+}
+
+/* ══════════════════════════════════════════════════════ 待办历史与日历 */
+
+/**
+ * 历史表：{ 'YYYY-MM-DD': { 任务id: {kind,title,time,plantId,emoji} } }。
+ * 只记「那天有什么任务」，完成与否仍然只认 tasksDone，一个真相源。
+ */
+const historyMap = () => (S.state.taskHistory ||= {});
+
+/** 把当前算出来的任务记进历史（今天 + 未来几天）；只留最近 120 天 */
+function recordTaskHistory() {
+  if (!S.state || !S.tasks.length) return false;
+  const hist = historyMap();
+  let changed = false;
+  for (const t of S.tasks) {
+    const day = (hist[t.date] ||= {});
+    const next = {
+      kind: t.kind, title: t.title, time: t.time,
+      plantId: t.plantId || null, emoji: t.emoji || '',
+      detail: t.detail || '', why: t.why || '',
+    };
+    const prev = day[t.id];
+    // 同一天的任务会被反复重算（钟点、文案会变），以最后一次为准；
+    // 过去的日期不在 S.tasks 里，写进去的就不会再被覆盖
+    if (prev && ['kind', 'title', 'time', 'detail', 'why'].every((k) => prev[k] === next[k])) continue;
+    day[t.id] = { ...prev, ...next };
+    changed = true;
+  }
+  const dates = Object.keys(hist).sort();
+  if (dates.length > 120) {
+    const keep = new Set(dates.slice(-120));
+    for (const d of dates) if (!keep.has(d)) delete hist[d];
+    changed = true;
+  }
+  return changed;
+}
+
+/** 老数据只有 tasksDone（id 里带日期），把还没进历史的补成一条，别让日历一片空白 */
+function backfillHistory() {
+  if (!S.state) return false;
+  const hist = historyMap();
+  let changed = false;
+  for (const [id, v] of Object.entries(S.state.tasksDone || {})) {
+    const p = M.taskIdParts(id);
+    if (!p.date) continue;
+    // 周末那几条的 id 挂在那周起点上；搬回工位是起点 +3 天
+    const date = p.owner === 'weekend' && p.kind === 'weekendBack' ? M.addDays(p.date, 3) : p.date;
+    if (date > S.today) continue;
+    const day = (hist[date] ||= {});
+    if (day[id]) continue;
+    const plantId = String(p.owner).startsWith('p_') ? p.owner : null;
+    day[id] = {
+      kind: p.kind || 'done',
+      title: kindTitle(p.kind, plantId),
+      time: v?.at ? localHM(v.at) : '',
+      plantId,
+      emoji: '',
+      detail: '',
+      bf: 1,   // 回填：只知道「做过」，不知道那天还有没有别的；别拿去判欠账
+    };
+    changed = true;
+  }
+  return changed;
+}
+
+/** 某一天的任务：先用现在算出来的，没有就翻历史 */
+function dayItems(date) {
+  const live = S.tasks.filter((t) => t.date === date);
+  if (live.length) return live;
+  const hist = historyMap()[date];
+  if (!hist) return [];
+  return Object.entries(hist).map(([id, v]) => ({
+    id, date, kind: v.kind,
+    // 回填的老记录只存过 kind，标题是按类型补的；真记过的用当时的标题
+    title: v.bf ? kindTitle(v.kind, v.plantId) : (v.title || kindTitle(v.kind, v.plantId)),
+    time: v.time || '', detail: v.detail || '', why: v.why || '',
+    plantId: v.plantId || null, emoji: v.emoji || '', bf: v.bf || 0,
+    state: S.state.tasksDone?.[id] || null,
+  }));
+}
+
+/**
+ * 这天是不是「完整记录」。
+ * 老数据回填出来的只代表"勾过的那些"，缺的不等于没做——这种日子不判欠账、不标红点。
+ */
+const dayIsKnown = (items) => items.some((t) => !t.bf);
+
+/**
+ * 空日子到底是哪一种空——别把「周末本来就不排任务」说成「历史没记到」。
+ *   early  看板还没开始记账（taskHistory 最早那天之前）
+ *   rest   周六周日不在实验室，本来就不生成任务
+ *   future 还没算到（任务只排今天往后 7 天）
+ *   gap    那天看板没开着，任务没进历史（不代表没做）
+ */
+function emptyDayText(date) {
+  const dates = Object.keys(historyMap()).sort();
+  const start = dates[0] || S.today;
+  if (date < start) {
+    return {
+      title: '那天还没开始记',
+      note: `看板从 ${M.monthDay(start)}（${M.weekdayCN(start)}）才开始记每天有哪些任务，更早的日子只剩你当时勾过的「完成过」记录。`,
+    };
+  }
+  if (M.isRestDay(date)) {
+    return {
+      title: '周末不排任务',
+      note: '周六周日人不在实验室，模型这两天不生成任何要到场的任务——两盆就留在原地，周一上班再看。',
+    };
+  }
+  if (date > M.addDays(S.today, 6)) {
+    return { title: '还没算到这天', note: '任务只排今天往后 7 天，靠近了会自己算出来。' };
+  }
+  return {
+    title: '这天没有任务',
+    note: '那天看板没开着，任务没进历史——不代表没做。',
+  };
+}
+
+/** 日历当前显示哪个月（默认这个月） */
+function calMonthInfo() {
+  const [y, m] = (S.calMonth || S.today.slice(0, 7)).split('-').map(Number);
+  return { y, m, key: `${y}-${pad(m)}` };
+}
+
+const shiftMonth = (key, delta) => {
+  const [y, m] = key.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+};
+
+/** 点日历 / 点历史欠账：看那天的任务与完成情况（只读，改了历史就对不上了） */
+function openDaySheet(date) {
+  const items = dayItems(date);
+  const known = dayIsKnown(items);
+  const tally = M.dayTally(items, S.state.tasksDone || {}, date, S.today);
+  // 和「今日」用同一套任务行（图标、徽章、勾选都一样），只是勾选记到那一天
+  const row = (t) => taskRow({ ...t, date }, { history: date });
+  const empty = items.length ? null : emptyDayText(date);
+  const sum = empty
+    ? empty.title
+    : !known
+      ? `只有 ${tally.done} 件完成记录（那天没开过页面，记不全）`
+      : `共 ${tally.total} 件：完成 ${tally.done}`
+        + (tally.skipped ? ` · 跳过 ${tally.skipped}` : '')
+        + (tally.missed ? ` · <b style="color:var(--red)">没做 ${tally.missed}</b>` : '')
+        + (tally.pending ? ` · 待办 ${tally.pending}` : '');
+  openSheet(`<h3>${M.monthDay(date)} ${M.weekdayCN(date)}</h3>
+    <p class="sub">${sum}</p>
+    ${items.length
+      ? `<div class="tasklist">${items.map(row).join('')}</div>
+         ${!S.readonly ? '<div class="note" style="margin-top:10px">那天其实做了、只是忘了点？点右边的圆圈补上，日历上的红点就消了。</div>' : ''}`
+      : `<div class="note">${empty.note}</div>`}
+  `);
+}
+
+/** 「以前没做完的」：过了日子也没勾的，别静默消失 */
+function overdueCard() {
+  const days = Object.keys(historyMap()).filter((d) => d < S.today).sort().reverse();
+  const rows = [];
+  for (const d of days) {
+    const items = dayItems(d);
+    if (!dayIsKnown(items)) continue;   // 只有回填记录：缺的不算没做
+    for (const t of items) {
+      const st = S.state.tasksDone?.[t.id];
+      if (st?.done || st?.skipped) continue;
+      rows.push({ ...t, date: d });
+    }
+    if (rows.length >= 8) break;
+  }
+  if (!rows.length) return '';
+  const row = (r) => `<button class="hist-row miss overdue" data-act="calDay" data-date="${r.date}">
+    <span class="hist-time">${M.monthDay(r.date)}</span>
+    <span class="hist-main"><b>${esc(r.title)}</b><span>${esc(KIND_META[r.kind]?.label || '')}${r.time ? ` · ${esc(r.time)}` : ''}</span></span>
+    <span class="hist-tag">${M.diffDays(S.today, r.date)} 天前</span>
+  </button>`;
+  return `<div class="card">
+    <div class="card-head"><div class="card-title">以前没做完的</div><div class="note">${rows.length} 件 · 点开看那天</div></div>
+    <div class="hist-list">${rows.map(row).join('')}</div>
+  </div>`;
+}
+
+function datePanel() {
+  const d = S.idx?.daily.get(S.today) || {};
+  const rain = M.rainOutlook(S.idx, S.today);
+  const dt = M.parseDate(S.today);
+  const y = dt.getFullYear(), mo = dt.getMonth(), todayD = dt.getDate();
+  // 小日历：有没做完的日子标红点，全做完的标绿点，点开看那天
+  const cm = calMonthInfo();
+  const firstDow = new Date(cm.y, cm.m - 1, 1).getDay();
+  const ndays = new Date(cm.y, cm.m, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push('<b class="pad"></b>');
+  for (let i = 1; i <= ndays; i++) {
+    const date = `${cm.key}-${pad(i)}`;
+    const items = dayItems(date);
+    const known = dayIsKnown(items);
+    const tally = known ? M.dayTally(items, S.state.tasksDone || {}, date, S.today) : null;
+    // 只给"已经过去、而且有没做完的"日子标红点；未来的日子还没发生，不标
+    const dot = tally && date < S.today && tally.missed > 0 ? 'missed' : '';
+    const tip = tally
+      ? (date > S.today
+        ? `${tally.total} 件待办`
+        : `${tally.done}/${tally.total} 完成${tally.missed ? `，${tally.missed} 件没做（点开可以补勾）` : ''}`)
+      : items.length ? `只有 ${items.length} 件完成记录` : emptyDayText(date).title;
+    cells.push(`<b class="cal-day ${date === S.today ? 'on' : ''} ${dot}" data-act="calDay" data-date="${date}" title="${esc(tip)}">${i}</b>`);
+  }
+  const { rise, set } = sunTimes(S.today);
+  const todays = S.tasks.filter((t) => t.date === S.today);
+  const done = todays.filter((t) => t.state?.done || t.state?.skipped).length;
+  const sun = S.suns[S.state.plants[0]?.id];
+  const coldNight = (d.tmin ?? 99) < M.roomLine(Math.max(...S.state.plants.map((p) => p.traits?.minNightC ?? 5)), S.state.site);
+
+  return `<div class="card day-panel">
+    <div class="dp-top">
+      <div class="dp-date">${todayD}<span>${mo + 1}月</span></div>
+      <div class="dp-top-right">
+        <div class="dp-week">${M.weekdayCN(S.today)}<small>${y}</small></div>
+        ${weatherIconImg(d.code, 54)}
+      </div>
+    </div>
+
+    <div class="dp-cal-head">
+      <button data-act="calPrev" aria-label="上个月">‹</button>
+      <b>${cm.y} 年 ${cm.m} 月</b>
+      <button data-act="calNext" aria-label="下个月">›</button>
+    </div>
+    <div class="dp-cal">
+      ${['日', '一', '二', '三', '四', '五', '六'].map((w) => `<i>${w}</i>`).join('')}
+      ${cells.join('')}
+    </div>
+
+    <div class="dp-rows">
+      <div class="dp-row"><span>日出 / 日落</span><b>${rise} · ${set}</b></div>
+      <div class="dp-row"><span>最高 / 最低</span><b>${Math.round(d.tmax)}° / ${Math.round(d.tmin)}°</b></div>
+      <div class="dp-row"><span>天气</span><b>${M.weatherWord(d.code)} · 湿 ${Math.round(d.rh ?? 70)}%</b></div>
+      <div class="dp-row"><span>总光量</span><b>${sun ? sun.dli : '–'} mol${sun?.tripHours ? `（含${sun.tripLabel} ${sun.tripHours}h）` : ''}</b></div>
+      <div class="dp-row"><span>降水</span><b>${rain && rain.tone !== 'dry' ? `${num(d.precip, 1)} mm` : '无'}</b></div>
+    </div>
+
+    ${coldNight ? `<div class="dp-alert"><img src="/img/status/icon_status_night_lamp.jpg" alt=""><span>今夜 ${Math.round(d.tmin)}℃，怕冷的要收回屋</span></div>` : ''}
+
+    <div class="dp-foot">今日任务 ${done}/${todays.length}${todays.length ? '' : ' · 清空'} · 红点是那天没做完的</div>
   </div>`;
 }
 
@@ -317,8 +898,10 @@ function viewToday() {
   const later = S.tasks.filter((t) => t.date !== S.today).slice(0, 4);
 
   return `<div class="stack">
-    ${heroBanner()}
-    ${wxCard(d, rain)}
+    <div class="hero-row">
+      ${heroBanner()}
+      ${datePanel()}
+    </div>
     <div class="cols">
       <div class="stack">
         ${st.plants.map((p) => plantCard(p)).join('')}
@@ -327,8 +910,9 @@ function viewToday() {
       </div>
       <div class="stack">
         ${taskCard(todays)}
+        ${overdueCard()}
         ${later.length ? `<div class="card">
-          <div class="card-head"><div class="card-title">接下来</div><button class="linkbtn" data-go="weather">全部</button></div>
+          <div class="card-head"><div class="card-title">接下来</div><button class="linkbtn" data-act="laterAll">全部</button></div>
           <div class="tasklist">${later.map((t) => taskRow(t, true)).join('')}</div>
         </div>` : ''}
       </div>
@@ -338,7 +922,7 @@ function viewToday() {
 
 function wxCard(d, rain) {
   const sun = S.suns[S.state.plants[0]?.id];
-  const coldNight = (d.tmin ?? 99) < 8;
+  const coldNight = (d.tmin ?? 99) < M.roomLine(Math.max(...S.state.plants.map((p) => p.traits?.minNightC ?? 5)), S.state.site);
   return `<div class="card wx">
     <div class="wx-top">
       <div style="display:flex;align-items:center;gap:12px">
@@ -350,12 +934,14 @@ function wxCard(d, rain) {
         <div>${rain ? `<span style="color:${rain.tone === 'dry' ? 'var(--muted)' : 'var(--blue)'}">${rain.text}</span>` : ''} · ET₀ <b>${num(d.et0, 2)}</b> mm</div>
       </div>
     </div>
-    <div class="wx-stats">
+     <div class="wx-stats">
       <div><b>${num(d.sunSec / 3600, 1)}<i>h</i></b><span>气象日照</span></div>
       ${sun?.indoor
-        ? `<div><b>散射</b><span>走廊·无直射</span></div>`
+        ? (sun.tripHours
+          ? `<div><b>${sun.tripHours}<i>h</i></b><span>${esc(sun.tripLabel)}直射</span></div>`
+          : `<div><b>散射</b><span>走廊·无直射</span></div>`)
         : `<div><b>${sun ? sun.directHours : 0}<i>h</i></b><span>盆位直射</span></div>`}
-      <div><b>${sun ? sun.dli : '–'}</b><span>${sun?.indoor ? '散射 DLI' : 'DLI mol'}</span></div>
+      <div><b>${sun ? sun.dli : '–'}</b><span>${sun?.indoor ? '今日总光量' : 'DLI mol'}</span></div>
     </div>
     ${coldNight ? `<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:7px 11px;background:var(--blue-2);border-radius:10px;font-size:12px;color:var(--blue)">
       <img src="/img/status/icon_status_night_lamp.jpg" alt="夜温提示" style="width:24px;height:24px;border-radius:50%;object-fit:cover;flex:none">
@@ -369,11 +955,18 @@ function dayHint(d, sun) {
   const bits = [];
   const north = Math.abs(((S.state.site.azimuth % 360) + 540) % 360 - 180) < 55; // 接近正北
   if ((d.precip ?? 0) >= 1.5) bits.push('有雨，露天的先收进来。');
-  if ((d.tmin ?? 99) < 8) bits.push('夜里偏冷。');
+  const coldLine = M.roomLine(Math.max(...S.state.plants.map((p) => p.traits?.minNightC ?? 5)), S.state.site);
+  if ((d.tmin ?? 99) < coldLine) bits.push('夜里接近冰点，记得搬进实验室。');
   if (sun?.indoor) {
-    bits.push(north ? '朝北阳台 11 月本来就没直射，走廊只吃散射，别指望晒太阳。' : '走廊里只有散射光，靠门口或补光才管用。');
+    if (sun.tripHours) {
+      bits.push(`${sun.tripActual ? '你点的' : '计划'} ${tripSpanText(sun)} 在${sun.tripLabel}，走廊 ${sun.homeRouteDli} + 西阳台 ${sun.tripDli}，今日总光量 ${sun.dli}。`);
+    } else if (sun.tripSkipped) {
+      bits.push('今天西阳台没有可搬的直射窗口（或有雨/大风），全天走廊散射。');
+    } else {
+      bits.push(north ? `朝北阳台${Number(S.today.slice(5, 7))}月本来就没直射，走廊只吃散射，别指望晒太阳。` : '走廊里只有散射光，靠门口或补光才管用。');
+    }
   } else if (sun && sun.verdict === '不足') {
-    bits.push(north ? '朝北阳台 11 月零直射，垫高也没用，只能补光。' : '盆位晒不到太阳，垫高试试。');
+    bits.push(north ? `朝北阳台${Number(S.today.slice(5, 7))}月零直射，垫高也没用，只能补光。` : '盆位晒不到太阳，垫高试试。');
   }
   if (!bits.length) bits.push('天气平稳，按计划走就行。');
   return esc(bits.join(' '));
@@ -383,9 +976,12 @@ function plantCard(p) {
   const plan = S.plans[p.id];
   const sun = S.suns[p.id];
   const d = S.idx?.daily.get(S.today) || {};
-  const v = M.plantVerdict(p, plan, sun, d);
+  const v = M.plantVerdict(p, plan, sun, d, S.state.site);
   const barCls = plan.leftPct <= 15 ? 'crit' : plan.leftPct <= 40 ? 'low' : '';
-  const due = plan.daysLeft <= 0;
+  const left = Number.isFinite(plan.dutyDaysLeft) ? plan.dutyDaysLeft : plan.daysLeft;
+  const whenDate = plan.dutyDate || plan.nextDate;
+  const whenTime = plan.dutyTime || plan.nextTime;
+  const due = left <= 0;
   return `<div class="card">
     <div class="plant-head">
       ${plantAvatar(p, 52)}
@@ -394,8 +990,8 @@ function plantCard(p) {
         <div class="plant-sub">${esc(p.fullName || (p.species + (p.cultivar ? ' · ' + p.cultivar : '')))}</div>
       </div>
       <div class="right">
-        <div class="big-day ${due ? 'due' : ''}">${due ? (plan.overdueDays ? `−${plan.overdueDays}` : '今天') : plan.daysLeft}${due && !plan.overdueDays ? '' : due ? '<small>天</small>' : '<small>天后</small>'}</div>
-        <div style="font-size:10.5px;color:var(--muted);margin-top:2px">${due ? '该浇水了' : M.monthDay(plan.nextDate) + ' 浇'}</div>
+        <div class="big-day ${due ? 'due' : ''}">${due ? (plan.overdueDays ? `−${plan.overdueDays}` : '今天') : left}${due && !plan.overdueDays ? '' : due ? '<small>天</small>' : '<small>天后</small>'}</div>
+        <div style="font-size:10.5px;color:var(--muted);margin-top:2px">${due ? `${whenTime} 浇透` : `${M.monthDay(whenDate)} ${whenTime} 浇`}</div>
       </div>
     </div>
 
@@ -406,14 +1002,14 @@ function plantCard(p) {
         还剩 ${plan.leftPct}%
       </span>
       <span>·</span>
-      <span>本次 ${plan.amount} ml</span>
-      <span style="margin-left:auto">≈ ${plan.targetWetDays} 天的量</span>
+      <span>盆里存 ${plan.capacity} ml</span>
+      <span style="margin-left:auto">浇透一次 ≈ ${plan.intervalDays} 天</span>
     </div>
 
     <dl class="metrics">
       <div class="metric"><dt>今日耗水</dt><dd>${plan.dailyUseToday}<small>ml</small></dd></div>
-      <div class="metric"><dt>${sun?.indoor ? '散射 DLI' : '直射'}</dt><dd>${sun?.indoor ? sun.dli : (sun ? sun.directHours : 0)}<small>${sun?.indoor ? 'mol' : 'h'}</small></dd></div>
-      <div class="metric"><dt>满盆</dt><dd>${plan.capacity}<small>ml</small></dd></div>
+      <div class="metric"><dt>${sun?.indoor ? '今日总光量' : '直射'}</dt><dd>${sun?.indoor ? sun.dli : (sun ? sun.directHours : 0)}<small>${sun?.indoor ? 'mol' : 'h'}</small></dd></div>
+      <div class="metric"><dt>下次</dt><dd>${left <= 0 ? '今天' : M.monthDay(whenDate).replace('月', '/').replace('日', '')} <small>${whenTime}</small></dd></div>
     </dl>
 
     <div class="verdicts">
@@ -422,13 +1018,19 @@ function plantCard(p) {
 
     ${S.readonly ? '' : `<div class="actions">
       ${due
-        ? `<button class="btn wide" data-act="water" data-plant="${p.id}">${ICON.drop} 浇水 ${plan.amount} ml</button>`
-        : `<button class="btn ghost" data-act="water" data-plant="${p.id}">提前浇一点</button>`}
+        ? `<button class="btn wide" data-act="water" data-plant="${p.id}">${ICON.drop} 浇透（底孔出水）</button>`
+        : `<button class="btn ghost" data-act="water" data-plant="${p.id}">提前浇透</button>`}
       <button class="btn ghost" data-act="soilSheet" data-plant="${p.id}">${ICON.drop} 探土</button>
       <button class="btn ghost" data-act="photoFor" data-plant="${p.id}">${ICON.camera} 拍照</button>
       <button class="btn ghost" data-act="plantDetail" data-plant="${p.id}">参数</button>
     </div>`}
   </div>`;
+}
+
+function tripSpanText(sun) {
+  const spans = sun?.tripSpans || [];
+  if (spans.length) return spans.map((s) => `${s.start}–${s.end}`).join('、');
+  return sun?.tripWin ? `${sun.tripWin.start}–${sun.tripWin.end}` : '';
 }
 
 function sunCard() {
@@ -440,40 +1042,60 @@ function sunCard() {
   if (sun.indoor) {
     const pct = Math.min(100, Math.round((sun.dli / sun.need) * 100));
     const trip = S.state.site.dayTrip?.enabled ? S.state.site.dayTrip : null;
-    const onBalcony = trip
-      ? M.sunPlan(
-        { ...p0, care: { ...p0.care, place: 'balcony' } },
-        S.idx, { ...S.state.site, ...trip, covered: false },
-        S.today, S.state.location.lat, S.state.location.lon,
-      )
-      : null;
+    const win = sun.tripWin;
+    const ratio = sun.homeDli > 0.05 ? sun.dli / sun.homeDli : 0;
+    const cmpText = ratio
+      ? `今天合计是全天待在走廊（${sun.homeDli}）的 ${ratio.toFixed(1)} 倍。`
+      : `走廊几乎没光（${sun.homeDli}），合计基本都靠这一段。`;
+    // 现在人在哪儿：按最后一条搬动记录（两盆一起搬，所以记在场地上）
+    const nowPlace = M.currentMovePlace(S.state.site);
+    const lastOut = M.moveLogOf(S.state.site)
+      .filter((e) => e.to === 'trip' && M.localDate(new Date(e.at)) === S.today)
+      .pop();
+    const placeText = nowPlace === 'trip'
+      ? `现在在${esc(sun.tripLabel)}${lastOut ? `（${new Date(lastOut.at).toTimeString().slice(0, 5)} 起）` : ''}`
+      : `现在在${esc(M.homeLabel(S.state.plants, S.state.site))}`;
+    const nextTo = nowPlace === 'trip' ? 'home' : 'trip';
     return `<div class="card">
       <div class="card-head">
         <div class="card-title" style="display:flex;align-items:center;gap:6px"><img src="/img/weather/icon_weather_sunny.jpg" style="width:20px;height:20px;border-radius:50%;object-fit:cover" alt="阳光">今天的光</div>
-        <div class="note">${sun.note} · 透过率 ${Math.round((S.state.site.corridorLight ?? 0.18) * 100)}%</div>
+        <div class="note">${sun.tripHours
+          ? (sun.tripFromStart
+            ? `一直待在${esc(sun.tripLabel)}（没搬）`
+            : `${sun.tripActual ? '按你点的搬动时间' : '按计划窗口'} · 走廊 + ${esc(sun.tripLabel)}`)
+          : `${sun.note} · 透过率 ${Math.round((S.state.site.corridorLight ?? 0.18) * 100)}%`}</div>
       </div>
       <div class="dli-gauge">
         <div class="dli-fill" style="width:${pct}%"></div>
         <i style="left:${Math.min(100, Math.round((sun.min / sun.need) * 100))}%"></i>
       </div>
       <div class="bar-row" style="margin-top:6px">
-        <span class="pct">DLI ${sun.dli}</span>
+        <span class="pct">今日总光量 ${sun.dli}</span>
         <span>·</span>
         <span>${p0.name}需要 ${sun.need}</span>
         <span style="margin-left:auto">${pct}%</span>
       </div>
+      <div class="cmp" style="margin-top:10px">
+        <div class="cmp-row"><span>走廊（其余时间）</span><b>${sun.homeRouteDli}</b></div>
+        ${sun.tripHours
+          ? `<div class="cmp-row hi"><span>${esc(sun.tripLabel)} ${sun.tripFromStart ? '全天' : tripSpanText(sun)}${sun.tripOpen ? '（还没搬回）' : ''}</span><b>${sun.tripDli}</b></div>
+        <div class="cmp-row"><span>今日总光量</span><b>${sun.dli}</b></div>`
+          : (trip ? `<div class="cmp-row"><span>${esc(sun.tripLabel)}</span><b>0</b></div>` : '')}
+      </div>
       <div class="sun-blocked-box">
         <img src="/img/status/icon_status_sun_blocked.jpg" alt="栏板遮挡">
         <div class="note" style="margin:0;font-size:12px;color:var(--ink)">
-          <b>走廊·零直射</b>：朝北走廊 11 月没有直射，垫高没用；门开大或搬到阳台散射量能翻倍。
+          ${sun.tripHours
+            ? (sun.tripFromStart
+              ? `<b>今天一整天都在${esc(sun.tripLabel)}</b>：昨天就放在那儿、没搬回来，所以没有走廊时段；${cmpText}`
+              : `<b>走廊只占小头</b>：${sun.tripActual ? `你点的 ${tripSpanText(sun)} 这 ${sun.tripHours} 小时` : `计划里的 ${sun.tripHours} 小时`}在${esc(sun.tripLabel)}，${cmpText}`)
+            : `<b>今天全在走廊</b>：${trip ? '西阳台没有可搬的直射窗口，或窗口内有雨/大风。' : '还没设置外出台。'}只有散射 ${sun.homeDli}。`}
         </div>
       </div>
-      <div class="cmp" style="margin-top:10px">
-        <div class="cmp-row"><span>现在：走廊</span><b>${sun.dli}</b></div>
-        ${onBalcony ? `<div class="cmp-row hi"><span>白天搬到${esc(S.state.site.dayTrip.label || '外出台')}</span><b>${onBalcony.dli}</b></div>
-        <div class="note">${esc(S.state.site.dayTrip.label || '外出台')}今天直射 ${onBalcony.directHours} h，比走廊的纯散射高一个档。</div>`
-          : '<div class="note">还没设置外出台，所以没有能晒到直射的位置。</div>'}
-      </div>
+      ${S.readonly || !trip ? '' : `<div class="actions" style="margin-top:12px;align-items:center">
+        <button class="btn ghost sm" data-act="move" data-to="${nextTo}">${ICON.move} ${nextTo === 'trip' ? `搬到${esc(sun.tripLabel)}` : '搬回走廊'}</button>
+        <button class="linkbtn" data-act="moveTime" style="margin-left:auto;font-size:11.5px">${placeText}</button>
+      </div>`}
     </div>`;
   }
 
@@ -519,7 +1141,7 @@ function taskCard(todays) {
     ${todays.length
       ? `<div class="tasklist">${todays.map((t) => taskRow(t)).join('')}</div>`
       : `<div class="empty">
-          <img src="/img/weather/icon_weather_sunny.jpg" alt="晒太阳" style="width:48px;height:48px;border-radius:50%;margin-bottom:8px;box-shadow:0 2px 8px rgba(184,135,27,0.18)">
+          <img src="/img/scenes/scene_empty_state.jpg" alt="待办清空" style="width:96px;height:96px;border-radius:18px;margin-bottom:10px;box-shadow:0 4px 16px rgba(44,95,69,0.12);object-fit:cover">
           <div><strong>清空，去晒晒太阳</strong></div>
           <div style="margin-top:2px">明天要做什么会自己算出来</div>
         </div>`}
@@ -527,33 +1149,47 @@ function taskCard(todays) {
   </div>`;
 }
 
-function taskRow(t, compact) {
+function taskRow(t, opts) {
+  const o = opts && typeof opts === 'object' ? opts : { compact: !!opts };
+  const compact = !!o.compact;
+  const hist = o.history || null;   // 传日期 = 历史行：勾选走 toggleDay，不显示「跳过」
   const meta = KIND_META[t.kind] || { label: t.kind, cls: '' };
   const st = t.state;
   const done = st?.done;
   const skipped = st?.skipped;
   const late = !st && t.date === S.today && t.time < nowHM();
   const lateDay = !st && t.date < S.today;
-  const isSunTask = t.kind === 'moveOut' || t.kind === 'toSun' || meta.icon === 'sun';
+  const isSunTask = t.kind === 'moveOut' || t.kind === 'toSun';
+  const isHomeTask = t.kind === 'toHome' || t.kind === 'moveIn';
+  const rowIcon = isSunTask
+    ? '<img class="task-sun-icon" src="/img/actions/icon_action_sun.jpg" alt="晒太阳" title="晒太阳">'
+    : isHomeTask
+      ? '<img class="task-home-icon" src="/img/status/icon_status_night_lamp.jpg" alt="收回" title="搬回去">'
+      : '';
   return `<div class="task ${done || skipped ? 'done' : ''} ${late || lateDay ? 'late' : ''}">
     <div class="task-time">${esc(t.time)}${lateDay ? '<div style="font-size:9.5px;color:var(--red)">逾期</div>' : ''}</div>
     <div class="task-main">
       <div class="task-title" style="display:flex;align-items:center;gap:6px">
-        ${plantBadge(t.plantId, t.emoji, 18)}
-        ${isSunTask ? `<img class="task-sun-icon" src="/img/weather/icon_weather_sunny.jpg" alt="晒太阳" title="晒太阳">` : ''}
+        ${t.plantId
+          ? plantBadge(t.plantId, t.emoji, 18)
+          : (rowIcon || (t.emoji ? `<span class="task-emoji">${t.emoji}</span>` : ''))}
         <span>${esc(t.title)}</span>
       </div>
-      ${compact ? `<div class="task-detail">${M.monthDay(t.date)} ${M.weekdayCN(t.date)} ${esc(t.time)}</div>` : `<div class="task-detail">${esc(t.detail || '')}</div>`}
-      ${compact ? '' : `<div class="task-why">${esc(t.why || '')}</div>`}
+      ${compact
+        ? `<div class="task-detail">${M.monthDay(t.date)} ${M.weekdayCN(t.date)} ${esc(t.time)}</div>`
+        : (t.detail ? `<div class="task-detail">${esc(t.detail)}</div>` : '')}
+      ${compact || !t.why ? '' : `<div class="task-why">${esc(t.why)}</div>`}
       <div class="task-meta">
         <span class="badge ${meta.cls}">${meta.img ? `<img src="${meta.img}" alt="" style="width:12px;height:12px;margin-right:3px">` : ''}${meta.label}</span>
         ${skipped ? `<span class="badge">已跳过${st.reason ? '·' + esc(st.reason) : ''}</span>` : ''}
         ${done ? `<span class="badge green">完成 ${st.at ? localHM(st.at) : ''}</span>` : ''}
-        ${!compact && !done && !skipped && !S.readonly ? `<button class="linkbtn" data-act="skip" data-task="${t.id}">跳过</button>` : ''}
+        ${!compact && !hist && !done && !skipped && !S.readonly ? `<button class="linkbtn" data-act="skip" data-task="${t.id}">跳过</button>` : ''}
       </div>
     </div>
     <div class="task-side">
-      ${compact || S.readonly ? '' : `<button class="tick ${done ? 'on' : ''}" data-act="toggle" data-task="${esc(t.id)}" aria-label="完成">${ICON.check}</button>`}
+      ${compact || S.readonly ? '' : `<button class="tick ${done ? 'on' : ''}" ${hist
+        ? `data-act="toggleDay" data-task="${esc(t.id)}" data-date="${esc(hist)}" aria-label="补勾"`
+        : `data-act="toggle" data-task="${esc(t.id)}" aria-label="完成"`}>${ICON.check}</button>`}
     </div>
   </div>`;
 }
@@ -563,10 +1199,15 @@ function explainCard() {
     <details>
       <summary>这些数字是怎么来的</summary>
       <div class="body">
-        <p><b>一次浇多少</b>：先算<b>这盆花每天喝多少</b>（基准 × ET₀ × 场地系数，长寿花现在约 30 ml/天），再乘以<b>它能忍受土湿几天</b>（长寿花 6 天、罗汉松 8 天）＝ 180 ml。上限是盆能装下的量（满盆 350 ml × 给水比例），两个取小的。</p>
-        <p style="margin-top:6px"><b>为什么不用 350</b>：350 是把整盆浇到饱和的量，会让底半部在饱和线附近待上两三天。景天科的须根缺氧 48 小时就开始褐变，而它的水库在叶子里，不在根里——不需要每次都灌满。</p>
-        <p style="margin-top:6px"><b>代价</b>：小剂量浇不到盆底，下层根长期喝不到水会退化。所以每月有一次“彻底浇透”，顺便把攒下的盐冲掉。</p>
-        <p style="margin-top:6px"><b>多久浇</b>：日耗 = 基准耗水 × ET₀/1.3 × 校准系数；累计耗完可用水的那天就是浇水日。雨天按盆口面积折算补水。</p>
+        <p><b>怎么浇</b>：一律浇到底孔出水，不用数毫升。出水说明基质已经回到持水量，再倒只是从底孔流走；顺便把攒下的盐冲掉，下层根也喝得到。</p>
+        <p style="margin-top:6px"><b>毫升数是干嘛的</b>：盆土吸饱后能给根用的水 = 盆容积 × 基质有效水率 × 只用 65%（留点缓冲，不逼到永久萎蔫点）。这个数决定「下次隔多久」，不是你这次该倒多少。</p>
+        <p style="margin-top:6px"><b>多久浇</b>：日耗 = kTrans × 今日总光量 + 土面蒸发（VPD × 盆口面积），再乘校准系数；累计耗完这盆存水的那天就是要浇的日子。雨天按盆口面积折算补水。</p>
+        <p style="margin-top:6px"><b>几点浇</b>：按当天的天气分三档算，不是写死的 8:30。</p>
+        <p style="margin-top:4px">· <b>热天（最高 ≥28℃）→ 傍晚</b>：等太阳落下去再浇。中午浇一半会被蒸掉，盆土被晒到 40℃ 时冷水下去还会激根；傍晚土还温着、辐射已经降了，水整夜慢慢渗，第二天一早盆是满的。夜里热，不担心湿着过夜。花花是 CAM，气孔晚上才开，傍晚浇正好。</p>
+        <p style="margin-top:4px">· <b>冷天（最高 &lt;14℃）→ 上午 10–11 点</b>：挑上午里土回暖的那段，浇完还有大半天排水回温，不带着湿土过夜——夜里又冷又湿是烂根的标准组合。</p>
+        <p style="margin-top:4px">· <b>温和天（14–28℃）→ 早上</b>：ISU Extension 的 5–9 点口径，浇完叶面/土表当天能干；RHS 也说凉的时候浇盆面蒸发少。</p>
+        <p style="margin-top:4px">另外几条一直有效：浇完离日落留够时间（温和/冷天 2.5 h，热天 0.5 h）；外出台当天落地 1 小时内不浇；露天且后 3 小时要下雨就往后挪；只在你到得了现场的时间窗（默认 08:00–19:00）里挑。</p>
+        <p style="margin-top:6px"><b>今日总光量</b>：走廊时间按走廊透光率、西阳台时间按露天光，逐小时拼成当天的 DLI。今天用你点「搬到西阳台 / 搬回走廊」的时间算，没点过的日期才用计划窗口——所以早上就搬过去，光量会从早上开始算。</p>
         <p style="margin-top:6px"><b>直射几小时</b>：按太阳方位角/高度角与栏板高度、盆位进深算遮挡；斜射时用 cos 修正阴影投影。朝向设错这数就会错。</p>
         <p style="margin-top:6px"><b>校准</b>：你说过“还湿”或“干透了”，模型会自己调系数。</p>
       </div>
@@ -600,7 +1241,9 @@ function viewPlants() {
             <div class="kv"><span>基质</span><b>${({ coir: '椰糠/泥炭', humus: '腐叶土', grit: '颗粒土' })[p.pot.media] || p.pot.media}</b></div>
           </div>
           <div>
-            <div class="kv"><span>一次浇透</span><b>${plan.amount} ml</b></div>
+            <div class="kv"><span>浇透能存</span><b>${plan.capacity} ml</b></div>
+            <div class="kv"><span>下次</span><b>${M.monthDay(plan.dutyDate || plan.nextDate)} ${plan.dutyTime || plan.nextTime}</b></div>
+            <div class="kv"><span>上次浇透</span><b>${p.care?.lastWaterToDrain ? M.monthDay(localYMD(p.care.lastWateredAt)) : '还没浇透过（待重设）'}</b></div>
             <div class="kv"><span>基准日耗</span><b>${p.traits.baseDailyMl} ml</b></div>
             <div class="kv"><span>校准</span><b>×${(p.calibration?.factor ?? 1).toFixed(2)} · ${p.calibration?.samples || 0} 次</b></div>
             <div class="kv"><span>耐寒线</span><b>${p.traits.minNightC}℃</b></div>
@@ -614,7 +1257,7 @@ function viewPlants() {
           if (!checks.length) return '<div class="note" style="margin-bottom:6px">还没用竹签校准过——第一次记完，日耗就会按你的土改。</div>';
           return `<div class="note" style="margin-bottom:6px">最近探土：${checks.map((c) => `第 ${c.days} 天${esc(c.note)}`).join(' · ')}　→ 系数 ×${(p.calibration?.factor ?? 1).toFixed(2)}</div>`;
         })()}
-        ${logs.length ? logs.map((l) => `<div class="kv"><span>${esc(localYMD(l.at))} · ${esc(l.type)}${l.note ? '（' + esc(l.note) + '）' : ''}</span><b>${l.amountMl ? l.amountMl + ' ml' : (l.days ? l.days + ' 天' : '')}</b></div>`).join('')
+        ${logs.length ? logs.map((l) => `<div class="kv"><span>${esc(localYMD(l.at))} · ${esc(l.type)}${l.note ? '（' + esc(l.note) + '）' : ''}</span><b>${l.amountMl ? `存水 ${l.amountMl} ml` : (l.days ? l.days + ' 天' : '')}</b></div>`).join('')
           : '<div class="note">还没有浇水或探土记录</div>'}
         <div class="actions">
           <button class="btn ghost sm" data-act="water" data-plant="${p.id}">记一次浇水</button>
@@ -644,8 +1287,8 @@ function wxContext() {
   }
   return {
     key: 'home',
-    label: site.label || '走廊',
-    note: `${site.label || '走廊'} · 只有散射，直射恒为 0`,
+    label: M.homeLabel(S.state.plants, site),
+    note: `${M.homeLabel(S.state.plants, site)} · 只有散射，直射恒为 0`,
     plant: p0,
     site,
   };
@@ -656,7 +1299,10 @@ function viewWeather() {
   const ctx = wxContext();
   const p0 = S.state.plants[0];
   const trip = S.state.site.dayTrip?.enabled ? S.state.site.dayTrip : null;
-  const sunAt = (date) => M.sunPlan(ctx.plant, S.idx, ctx.site, date, S.state.location.lat, S.state.location.lon);
+  // 这一页的表格按"单个地点"横向比，不把每天的搬动拼进来
+  const sunAt = (date) => M.sunPlan(ctx.plant, S.idx, ctx.site, date, S.state.location.lat, S.state.location.lon, { withTrip: false });
+  // 曲线看的是每天的总光量：走廊时段 + 西阳台时段（今天按实际搬动，未来按计划）
+  const routeAt = (date) => M.sunPlan(p0, S.idx, S.state.site, date, S.state.location.lat, S.state.location.lon);
 
   const rows = dates.map((date) => {
     const d = S.idx.daily.get(date);
@@ -674,9 +1320,12 @@ function viewWeather() {
   }).join('');
 
   const et0s = dates.map((x) => S.idx.daily.get(x).et0);
-  const dlis = dates.map((x) => sunAt(x).dli);
+  const dlis = dates.map((x) => routeAt(x).dli);
 
   return `<div class="stack">
+    <div class="card" style="padding:0;overflow:hidden;border:none;background:transparent;box-shadow:none">
+      <img src="/img/scenes/scene_weather_theater.jpg" alt="天气剧场" style="width:100%;display:block;border-radius:14px;border:1px solid var(--border)">
+    </div>
     <div class="card">
       <div class="card-head" style="align-items:flex-start">
         <div>
@@ -684,16 +1333,16 @@ function viewWeather() {
           <div class="note" style="margin-top:3px">${esc(ctx.note)}</div>
         </div>
         ${trip ? `<div class="seg mini">
-          <button data-act="wxSpot" data-spot="home" class="${ctx.key === 'home' ? 'on' : ''}">${esc(S.state.site.label || '走廊')}</button>
+          <button data-act="wxSpot" data-spot="home" class="${ctx.key === 'home' ? 'on' : ''}">${esc(M.homeLabel(S.state.plants, S.state.site))}</button>
           <button data-act="wxSpot" data-spot="trip" class="${ctx.key === 'trip' ? 'on' : ''}">${esc(trip.label)}</button>
         </div>` : ''}
       </div>
       <div style="overflow-x:auto">
       <table class="tbl">
-        <thead><tr><th>日期</th><th style="text-align:left">天</th><th>气温</th><th>雨 mm</th><th class="col-hide">ET₀</th><th class="col-hide">日照 h</th><th>实照 h</th><th class="col-hide">DLI</th></tr></thead>
+        <thead><tr><th>日期</th><th style="text-align:left">天</th><th>气温</th><th>雨 mm</th><th class="col-hide">ET₀</th><th class="col-hide">日照 h</th><th>实照 h</th><th class="col-hide">单点 DLI</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
-      <div class="note" style="margin-top:10px">“实照”是按云量折算后的有效直射小时（几何上晒得到 × 晴天比例），全阴天会掉到 1 h 以下${trip ? `；想看走廊的点上面那颗按钮` : ''}。改朝向或栏板类型，整列都会变。</div>
+      <div class="note" style="margin-top:10px">“实照”是按云量折算后的有效直射小时（几何上晒得到 × 晴天比例），全阴天会掉到 1 h 以下${trip ? `；想看走廊的点上面那颗按钮` : ''}。上面这张表按<b>单个地点</b>算，没把每天搬来搬去拼进来；走廊 + 西阳台的合计看下面的总光量曲线。</div>
     </div>
     <div class="cols even">
       <div class="card">
@@ -702,9 +1351,9 @@ function viewWeather() {
         <div class="note" style="margin-top:8px">ET₀ 高 = 盆干得快。模型直接用这个数缩放日耗水。</div>
       </div>
       <div class="card">
-        <div class="card-head"><div class="card-title">${esc(ctx.label)}的光量 DLI</div><div class="note">mol/m²/d · 点击查看数值</div></div>
+        <div class="card-head"><div class="card-title">今日总光量</div><div class="note">走廊 + ${esc(trip?.label || '西阳台')} · mol/m²/d</div></div>
         ${chartWidget('dli', { vals: dlis, dates, color: '#b8871b', unit: 'mol/m²/d', fmt: (v) => v.toFixed(1), threshold: p0.traits.lightNeedDli || 10, thresholdLabel: '花花需 ' + (p0.traits.lightNeedDli || 10) })}
-        <div class="note" style="margin-top:8px">花花要 ≥${p0.traits.lightNeedDli}、松松 ≥${S.state.plants[1]?.traits.lightNeedDli ?? 6} 才够。</div>
+        <div class="note" style="margin-top:8px">每天的总光量 = 走廊时段 × 走廊透光率 + ${esc(trip?.label || '西阳台')}时段 × 露天光。<b>今天按你点的搬动时间算，往后几天按计划窗口</b>；花花要 ≥${p0.traits.lightNeedDli}、松松 ≥${S.state.plants[1]?.traits.lightNeedDli ?? 6} 才够。</div>
       </div>
     </div>
     ${sunSetupCard()}
@@ -791,58 +1440,32 @@ function chartSummary(vals, dates, fmt, unit, threshold, thrIn) {
 
 function sunSetupCard() {
   const site = S.state.site;
-  const trip = site.dayTrip || null;
+  const trip = site.dayTrip?.enabled ? site.dayTrip : null;
   const p0 = S.state.plants[0];
   const lat = S.state.location.lat, lon = S.state.location.lon;
-  const probe = { ...p0, care: { ...p0.care, place: 'balcony' } };
-
-  const home = M.sunPlan(p0, S.idx, site, S.today, lat, lon);
-  const win = trip ? M.sunWindow({ spot: trip, wIndex: S.idx, date: S.today }) : null;
-  const tripSun = trip ? M.sunPlan(probe, S.idx, { ...site, ...trip, covered: false }, S.today, lat, lon) : null;
-  const railing = trip?.parapetType === 'railing';
+  const home = M.sunPlan(p0, S.idx, site, S.today, lat, lon, { withTrip: false });
+  const route = S.suns[p0.id] || home;
+  const win = route.tripWin || (trip ? M.sunWindow({ spot: trip, wIndex: S.idx, date: S.today }) : null);
+  const ratio = home.dli > 0.05 ? route.dli / home.dli : 0;
+  const worth = !!route.tripHours && route.tripDli >= Math.max(2, home.dli);
+  const railing = trip?.parapetType !== 'solid';
+  const nowPlace = M.currentMovePlace(site);
 
   return `<div class="card">
-    <div class="card-head"><div class="card-title" style="display:flex;align-items:center;gap:6px"><img src="/img/weather/icon_weather_sunny.jpg" style="width:20px;height:20px;border-radius:50%;object-fit:cover" alt="阳光">光的两处</div><div class="note">${M.monthDay(S.today)}</div></div>
-
-    <div class="spot-rows">
-      <div class="spot-row">
-        <div class="spot-name">走廊<span>现在在这儿</span></div>
-        <div class="spot-val">DLI <b>${home.dli}</b><small>散射 · 透光 ${Math.round((site.corridorLight ?? 0.18) * 100)}%</small></div>
-      </div>
-      <div class="spot-row ${trip ? '' : 'off'}">
-        <div class="spot-name">${esc(trip?.label || '西阳台')}<span>${trip?.label ? '白天外出台' : '未设置'}</span></div>
-        <div class="spot-val">${trip
-          ? (win
-            ? `实照 <b>${tripSun.effectiveHours.toFixed(1)} h</b><small>${win.start}–${win.end} · 几何 ${win.hours} h · DLI ${tripSun.dli}</small>`
-            : `<b>0 h</b><small>今天这边也没直射</small>`)
-          : `<b>—</b><small>点下面启用</small>`}</div>
-      </div>
-    </div>
-
-    ${win && trip ? `<div class="note" style="margin:2px 0 12px;padding:9px 11px;background:${tripSun.effectiveHours >= 1.5 ? 'var(--green-3)' : 'var(--paper-2)'};border-radius:10px">
-      ${tripSun.effectiveHours >= 1.5
-        ? `<b>今天值得搬：${win.start} 前后过去，${String(win.last + 1).padStart(2, '0')}:15 搬回来。</b>`
-        : `<b>今天云太厚（实照只有 ${tripSun.effectiveHours.toFixed(1)} h），搬不搬差别不大。</b>`}
-      ${railing ? '栏杆有缝隙，盆直接放地上就能晒到，不用垫高。' : '栏板实心，盆要垫到 55 cm 以上。'}
-    </div>` : ''}
-
-    <div class="field">
-      <label>${esc(trip?.label || '外出台')}朝向：${trip?.azimuth ?? 270}°　<span style="color:var(--ink-2)">${compass(trip?.azimuth ?? 270)}</span></label>
-      <input type="range" min="0" max="355" step="5" value="${trip?.azimuth ?? 270}" id="tripAz">
-      <div class="hint">手机指南针贴着栏杆朝外测。西晒一般是 250–290°。</div>
-    </div>
-    <div class="grid2">
-      <div class="field"><label>栏板类型</label><select id="tripParapet">
-        <option value="solid" ${!railing ? 'selected' : ''}>实心矮墙（挡低角度阳光）</option>
-        <option value="railing" ${railing ? 'selected' : ''}>栏杆有缝隙（基本不挡光）</option>
-      </select></div>
-      <div class="field"><label>外出台</label><select id="tripEnabled">
-        <option value="1" ${trip ? 'selected' : ''}>启用</option>
-        <option value="0" ${!trip ? 'selected' : ''}>关闭</option>
-      </select></div>
-    </div>
-    <div class="actions"><button class="btn ghost sm" data-act="saveTrip">保存这两处</button></div>
-    <div class="note" style="margin-top:8px">走廊是家，只有散射；${esc(trip?.label || '西阳台')}是白天能晒到的地方，每天搬一次。</div>
+    <div class="card-head"><div class="card-title">今天的光</div><div class="note">${M.monthDay(S.today)} · ${route.tripActual ? '按你点的搬动' : '按计划作息'}</div></div>
+    <div class="place"><div><b>走廊（全天不动）</b><span>只有散射</span></div><em>${home.dli}</em></div>
+    ${trip ? `<div class="place"><div><b>${esc(trip.label)}</b><span>${win ? `${tripSpanText(route)} 在那边${route.tripOpen ? '（还没搬回）' : ''}` : '今天这边没有直射'}</span></div><em>${route.tripDli}</em></div>
+    <div class="place"><div><b>今天合计</b><span>走廊 ${route.homeRouteDli} + ${esc(trip.label)} ${route.tripHours || 0} h</span></div><em>${route.dli}</em></div>` : ''}
+    <div class="note" style="margin-top:10px">${trip
+      ? (route.tripActual
+        ? `已按你点的 ${tripSpanText(route) || '搬动时间'} 算：西阳台 ${route.tripDli}、走廊 ${route.homeRouteDli}，今日总光量 ${route.dli}${ratio ? `，是全天待在走廊（${home.dli}）的 ${ratio.toFixed(1)} 倍` : ''}。`
+        : (worth
+          ? `<b>今天值得搬：${win.start} 前后过去，${win.end} 搬回来。</b> 这 ${route.tripHours} 小时拿到 ${route.tripDli}；今日总光量 ${route.dli}${ratio ? `，是全天待在走廊（${home.dli}）的 ${ratio.toFixed(1)} 倍` : ''}。${railing ? '栏杆有缝，盆放地上就能晒到。' : ''}`
+          : (route.tripHours
+            ? `今天西阳台这 ${route.tripHours} 小时只有 ${route.tripDli}，跟走廊一整天（${home.dli}）差不多，搬不搬都行。`
+            : `今天不搬：西阳台没有直射窗口，或窗口里有雨/大风。全天在走廊，只有 ${home.dli}。`)))
+      : '还没设外出台，除了走廊没有别的地方可去。'}</div>
+    <div class="actions"><button class="btn ghost sm" data-go="settings">改地点</button>${S.readonly || !trip ? '' : `<button class="btn ghost sm" data-act="move" data-to="${nowPlace === 'trip' ? 'home' : 'trip'}">${ICON.move} ${nowPlace === 'trip' ? '搬回走廊' : `搬到${esc(trip.label)}`}</button>`}</div>
   </div>`;
 }
 
@@ -851,18 +1474,51 @@ const compass = (deg) => {
   return names[Math.round(((deg % 360) / 22.5)) % 16];
 };
 
-/* ══════════════════════════════════════════════════════ 相册 */
+/* ══════════════════════════════════════════════════════ 相册与校园画廊 */
+function campusGalleryCard() {
+  const cur = getCurrentBanner();
+  return `<div class="card">
+    <div class="card-head">
+      <div>
+        <div class="card-title">杭电校园四季与节日长卷</div>
+        <div class="note" style="margin-top:2px">已生成 ${CAMPUS_BANNERS.length} 幅 · 顶部「换一张」只在当前这一季里轮换，节日/节气图不进轮换；点下面任意一张可手动指定</div>
+      </div>
+      <button class="btn ghost sm" data-act="nextBanner">本季换一张</button>
+    </div>
+    <div class="campus-grid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(210px, 1fr));gap:10px;margin-top:8px">
+      ${CAMPUS_BANNERS.map((b, idx) => {
+        const active = cur.id === b.id;
+        return `<div class="campus-card" data-act="setBanner" data-idx="${idx}" style="cursor:pointer;border-radius:10px;overflow:hidden;border:1.5px solid ${active ? 'var(--gold)' : 'var(--line)'};background:var(--paper-2);transition:.15s;position:relative">
+          <div style="aspect-ratio:16/9;position:relative;overflow:hidden">
+            <img src="${b.src}" alt="${esc(b.tag)}" style="width:100%;height:100%;object-fit:cover;display:block">
+            ${active ? '<span style="position:absolute;top:6px;right:6px;background:var(--gold);color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600">展示中</span>' : ''}
+          </div>
+          <div style="padding:7px 9px">
+            <div style="font-weight:600;font-size:12px;color:var(--ink)">${esc(b.tag)}</div>
+            <div style="font-size:10.5px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(b.sub)}</div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
 function viewAlbum() {
   const photos = S.state.photos || [];
+  const gallery = campusGalleryCard();
   if (!photos.length) {
-    return `<div class="card"><div class="empty"><strong>还没有照片</strong>每周留一张，看黄化率、冠幅、花色的变化</div>
-      <div class="actions" style="justify-content:center">
-        ${S.state.plants.map((p) => `<button class="btn" data-act="photoFor" data-plant="${p.id}">${ICON.camera} 拍${esc(p.name)}</button>`).join('')}
-      </div></div>`;
+    return `<div class="stack">
+      ${gallery}
+      <div class="card"><div class="empty"><strong>还没有植物打分照片</strong>每周留一张，看黄化率、冠幅、花色的变化</div>
+        <div class="actions" style="justify-content:center">
+          ${S.state.plants.map((p) => `<button class="btn" data-act="photoFor" data-plant="${p.id}">${ICON.camera} 拍${esc(p.name)}</button>`).join('')}
+        </div></div>
+    </div>`;
   }
   const byPlant = {};
   for (const ph of photos) (byPlant[ph.plantId] ||= []).push(ph);
   return `<div class="stack">
+    ${gallery}
     ${Object.entries(byPlant).map(([pid, list]) => {
       const p = S.state.plants.find((x) => x.id === pid) || { id: pid, name: '未分类', emoji: '🌱' };
       return `<div class="card">
@@ -890,6 +1546,16 @@ function viewAlbum() {
 function viewSettings() {
   const st = S.state;
   const v = S.config?.vision || {};
+  const _p0 = st.plants[0];
+  const _at = (siteLike, place = 'balcony') =>
+    M.sunPlan({ ..._p0, care: { ..._p0.care, place } }, S.idx, siteLike, S.today, st.location.lat, st.location.lon, { withTrip: false }).dli;
+  const places = {
+    north: _at(st.site),
+    corridor: M.sunPlan(_p0, S.idx, st.site, S.today, st.location.lat, st.location.lon, { withTrip: false }).dli,
+    trip: st.site.dayTrip?.enabled ? _at({ ...st.site, ...st.site.dayTrip }) : null,
+    win: st.site.dayTrip?.enabled ? M.sunWindow({ spot: st.site.dayTrip, wIndex: S.idx, date: S.today }) : null,
+    route: S.suns[_p0.id],
+  };
   return `<div class="stack">
     ${S.readonly ? `<div class="card" style="border-color:var(--gold);background:#fdf7e8">
       <div class="card-head"><div class="card-title">只读模式</div><div class="note">这个地址没带口令</div></div>
@@ -916,28 +1582,81 @@ function viewSettings() {
     </div>
 
     <div class="card">
-      <div class="card-head"><div class="card-title">阳台几何</div><div class="note">影响日照计算</div></div>
-      <div class="field"><label>朝向（外法线方位角）</label>
-        <div class="seg" id="azSeg">${[0, 90, 180, 270].map((a) => `<button data-az="${a}" class="${st.site.azimuth === a ? 'on' : ''}">${compass(a)}</button>`).join('')}</div>
-        <input type="number" id="siteAz" value="${st.site.azimuth}" style="margin-top:8px">
+      <div class="card-head"><div class="card-title">地点与今天的作息</div><div class="note">今日总光量</div></div>
+
+      <div class="place"><div><b>北阳台</b><span>参照点 · 顶棚很高，接近露天</span></div><em>${places.north}</em></div>
+      <div class="place"><div><b>走廊</b><span>现在的家 · 只有散射</span></div><em>${places.corridor}</em></div>
+      ${places.trip != null ? `<div class="place"><div><b>${esc(st.site.dayTrip?.label || '西阳台')}</b><span>${places.win ? '下午直射 ' + places.win.start + '–' + places.win.end : '今天这边没直射'} · 如果整天都待在那儿</span></div><em>${places.trip}</em></div>` : ''}
+      ${places.trip != null && places.route ? `<div class="place"><div><b>今日总光量</b><span>${places.route.tripActual ? '按你点的搬动' : '按计划'} · 走廊 ${places.route.homeRouteDli} + ${esc(st.site.dayTrip?.label || '西阳台')} ${places.route.tripHours || 0} h ${places.route.tripDli}</span></div><em>${places.route.dli}</em></div>` : ''}
+
+      <div class="field" style="margin-top:14px"><label>走廊透光率 %（相对北阳台）</label>
+        <input id="siteCorridor" type="number" step="1" value="${Math.round((st.site.corridorLight ?? 0.37) * 100)}">
+        <span class="hint">你在北阳台地面和走廊摆放点各量一次，相除就是它。实测 ${st.site.measured ? Math.round((st.site.measured.ratioCorridorToNorth ?? 0.37) * 100) + '%（' + st.site.measured.corridorLux + ' / ' + st.site.measured.northLux + ' lux）' : '还没测'}。</span>
+      </div>
+      <div class="field"><label>夜里叶面光照 lux</label>
+        <input id="siteNightLux" type="number" step="1" value="${st.site.nightLux ?? ''}" placeholder="没测过就留空">
+        <span class="hint">关灯后手机贴叶面朝光源量。<b>&lt;50</b> 不用管；<b>50–150</b> 明年 9 月前开始遮；<b>&gt;150</b> 现在就该遮。你现在填的是 ${st.site.nightLux ?? '空'}。</span>
       </div>
       <div class="grid2">
-        <div class="field"><label>栏板高 cm</label><input id="siteParapet" type="number" value="${st.site.parapetCm}"></div>
-        <div class="field"><label>盆面离地高 cm</label><input id="sitePotTop" type="number" value="${st.site.potTopCm}"></div>
-        <div class="field"><label>盆到栏板进深 cm</label><input id="siteDepth" type="number" value="${st.site.depthCm}"></div>
-        <div class="field"><label>栏板类型</label>
-          <select id="siteParapetType">
-            <option value="solid" ${(st.site.parapetType || 'solid') === 'solid' ? 'selected' : ''}>实心矮墙（挡低角度阳光）</option>
-            <option value="railing" ${st.site.parapetType === 'railing' ? 'selected' : ''}>栏杆有缝隙（基本不挡光）</option>
-          </select>
-        </div>
-        <div class="field"><label>上方有顶棚？</label>
-          <select id="siteCovered"><option value="no" ${!st.site.covered ? 'selected' : ''}>没有（露天）</option><option value="yes" ${st.site.covered ? 'selected' : ''}>有（半封闭）</option></select>
-        </div>
-        <div class="field"><label>走廊透光率 %</label><input id="siteCorridor" type="number" step="1" value="${Math.round((st.site.corridorLight ?? 0.18) * 100)}">
-          <span class="hint">实测：手机测光 App 屏幕朝上，分别量摆放点和阳台地面的照度，除一下就是它。<br>没实测时参考：紧贴门口 10–15%、门内 2 m 约 5%、3 m 或拐角 2–3%。</span></div>
+        <div class="field"><label>能在现场的最早时间</label>
+          <input id="siteWaterFrom" type="time" value="${esc(st.site.waterWindow?.from || '08:00')}"></div>
+        <div class="field"><label>最晚时间</label>
+          <input id="siteWaterTo" type="time" value="${esc(st.site.waterWindow?.to || '19:00')}"></div>
       </div>
-      <button class="btn" data-act="saveSite">保存几何</button>
+      <div class="note" style="margin-top:-6px;margin-bottom:12px">浇水钟点只在这个窗口里挑：人不在，算得再准也浇不了。窗口内还会按土温、辐射、日落、雨再筛一遍。</div>
+
+      <details style="margin-bottom:12px">
+        <summary>朝向与栏板尺寸</summary>
+        <div class="body">
+          <div class="grid2">
+            <div class="field"><label>北阳台朝向</label><input id="siteAz" type="number" value="${st.site.azimuth}"></div>
+            <div class="field"><label>栏板类型</label>
+              <select id="siteParapetType">
+                <option value="solid" ${(st.site.parapetType || 'solid') === 'solid' ? 'selected' : ''}>实心矮墙</option>
+                <option value="railing" ${st.site.parapetType === 'railing' ? 'selected' : ''}>栏杆有缝隙</option>
+              </select>
+            </div>
+            <div class="field"><label>栏板高 cm</label><input id="siteParapet" type="number" value="${st.site.parapetCm}"></div>
+            <div class="field"><label>盆面离地 cm</label><input id="sitePotTop" type="number" value="${st.site.potTopCm}"></div>
+            <div class="field"><label>盆到栏杆 cm</label><input id="siteDepth" type="number" value="${st.site.depthCm}"></div>
+            <div class="field"><label>上方顶棚</label>
+              <select id="siteCovered"><option value="no" ${!st.site.covered ? 'selected' : ''}>没有 / 很高</option><option value="yes" ${st.site.covered ? 'selected' : ''}>有，压得低</option></select>
+            </div>
+            <div class="field"><label>西阳台朝向</label><input id="tripAz" type="number" value="${st.site.dayTrip?.azimuth ?? 270}"></div>
+            <div class="field"><label>西阳台栏板</label>
+              <select id="tripParapet">
+                <option value="railing" ${(st.site.dayTrip?.parapetType || 'railing') === 'railing' ? 'selected' : ''}>栏杆有缝隙</option>
+                <option value="solid" ${st.site.dayTrip?.parapetType === 'solid' ? 'selected' : ''}>实心墙</option>
+              </select>
+            </div>
+            <div class="field"><label>西阳台顶棚高 cm</label><input id="tripRoof" type="number" value="${st.site.dayTrip?.roofHeightCm ?? 230}"></div>
+            <div class="field"><label>西阳台散射透过率 %</label><input id="tripDiffuse" type="number" step="5" value="${Math.round((st.site.dayTrip?.diffuse ?? 0.6) * 100)}"></div>
+          </div>
+          <div class="note" style="margin:-4px 0 10px">西阳台不是露天的：有顶棚、只有栏杆这一面敞口。所以散射要打折，直射只在太阳从开口斜射进来时才算——这两项错了，日耗会差一倍。</div>
+          <div class="field"><label>外出台</label>
+            <select id="tripEnabled"><option value="1" ${st.site.dayTrip?.enabled ? 'selected' : ''}>启用</option><option value="0" ${!st.site.dayTrip?.enabled ? 'selected' : ''}>关闭</option></select>
+          </div>
+        </div>
+      </details>
+
+      <button class="btn" data-act="savePlaces">保存三个地点</button>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-title">搬动与判冷</div><div class="note">什么时候才值得搬</div></div>
+      <div class="note" style="margin:0 0 10px">
+        周末人不在，<b>原地待着</b>（走廊 / 西阳台都行），不生成搬动任务；只有夜里降到接近冰点，才周五下班搬进房间、周一搬回。<br>
+        工作日：走廊为主 → 下午有直射窗口去西阳台 → 傍晚回走廊；走廊夜里也到冰点附近才进实验室。
+      </div>
+      <div class="grid2">
+        <div class="field"><label>走廊比室外暖 ℃</label>
+          <input id="wkWarm" type="number" step="1" value="${st.site.corridorWarmC ?? 5}">
+          <span class="hint">走廊是半室内，判冷时先给室外温度加这么多；阳台不加（就是露天那档）。</span></div>
+        <div class="field"><label>比耐受线再低 ℃ 才搬房间</label>
+          <input id="wkRoomBelow" type="number" step="1" value="${st.site.roomMoveBelowC ?? 5}">
+          <span class="hint">最怕冷的是 ${Math.round(Math.max(...st.plants.map((p) => p.traits?.minNightC ?? 5)))}℃，所以现在走廊要跌到 ${M.roomLine(Math.max(...st.plants.map((p) => p.traits?.minNightC ?? 5)), st.site)}℃ 才搬。</span></div>
+      </div>
+      <div class="actions"><button class="btn" data-act="saveWeekend">保存</button></div>
     </div>
 
     <div class="card">
@@ -1014,30 +1733,102 @@ const openSheet = (html) => { S.sheet = { html }; renderSheet(); };
 /* ══════════════════════════════════════════════════════ 动作 */
 const plantById = (id) => S.state.plants.find((p) => p.id === id);
 
-async function toggleTask(id) {
-  const task = S.tasks.find((t) => t.id === id);
-  if (!task) return;
+async function recordMove(to) {
+  const site = S.state.site;
+  if (!site) return;
+  const nowPlace = M.currentMovePlace(site);
+  if (nowPlace === to) {
+    toast(to === 'trip' ? '现在就在西阳台' : '现在就在走廊', 'err');
+    return;
+  }
+  const at = iso();
+  const log = Array.isArray(site.moveLog) ? site.moveLog : (site.moveLog = []);
+  log.push({ at, to, src: 'manual' });
+  // 顺手把今天的搬动任务勾掉，任务列表不用再点一次
+  const taskId = `trip|${S.today}|${to === 'trip' ? 'toSun' : 'toHome'}`;
+  if (S.tasks.some((t) => t.id === taskId) && !S.state.tasksDone[taskId]?.done) {
+    S.state.tasksDone[taskId] = { done: true, at };
+  }
+  await saveState();
+  compute();
+  render();
+  const label = to === 'trip' ? (site.dayTrip?.label || '西阳台') : M.homeLabel(S.state.plants, site);
+  toast(`已记下：${nowHM()} 到${label}`, 'ok');
+}
+
+/** 补记/修正最后一条搬动时间：记晚了会让"今天的光"从头到尾都算错 */
+function openMoveTimeSheet() {
+  const log = Array.isArray(S.state.site?.moveLog) ? S.state.site.moveLog : [];
+  if (!log.length) return toast('还没记过搬动', 'err');
+  const last = log[log.length - 1];
+  const d = new Date(last.at);
+  const p2 = (n) => String(n).padStart(2, '0');
+  const local = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  openSheet(`<h3>改一下搬动时间</h3>
+    <p class="sub">最后一条：${last.to === 'trip' ? `搬到${esc(S.state.site.dayTrip?.label || '西阳台')}` : '搬回走廊'}。
+      光量、耗水都按这个时间算——记晚了（比如早上搬的、中午才点）就改一下。</p>
+    <div class="field"><label>什么时候搬的</label><input id="moveAtIn" type="datetime-local" value="${local}">
+      <span class="hint">改完今天的 DLI 和下次浇水日会跟着重算。</span></div>
+    <div class="actions"><button class="btn wide" data-act="saveMoveTime">保存</button></div>`);
+}
+
+/** 勾/取消勾一件事的副作用（不负责保存和重渲染） */
+async function applyTaskState(task) {
+  const id = task.id;
   const cur = S.state.tasksDone[id];
   if (cur?.done) {
     delete S.state.tasksDone[id];
-  } else {
-    S.state.tasksDone[id] = { done: true, at: iso() };
-    if (task.kind === 'measure') {
-      S.state.site.lightMeasured = true;
-      openSheet(`<h3>测完了，把数填进去</h3>
-        <p class="sub">走廊透过率 = 花盆处的照度 ÷ 户外开阔处的照度</p>
-        <div class="field"><label>走廊透光率 %</label><input id="measuredPct" type="number" step="1" value="${Math.round((S.state.site.corridorLight ?? 0.18) * 100)}">
-          <span class="hint">例：户外 20000 lux、花盆处 6000 lux → 填 30</span></div>
-        <button class="btn wide" data-act="saveMeasured">保存并重算</button>`);
-    }
-    if (task.kind === 'water') {
-      const p = plantById(task.plantId);
-      p.care.lastWateredAt = iso();
-      p.care.lastWaterMl = task.amountMl || S.plans[p.id].amount;
-      (S.state.logs ||= []).unshift({ id: 'l' + Date.now(), plantId: p.id, type: '浇水', at: iso(), amountMl: p.care.lastWaterMl });
-      toast(`${p.name} 浇水 ${p.care.lastWaterMl} ml 已记录`, 'ok');
+    return;
+  }
+  S.state.tasksDone[id] = { done: true, at: iso() };
+  if (task.kind === 'measure') {
+    openSheet(`<h3>测完了，把数填进去</h3>
+      <p class="sub">走廊透过率 = 花盆处的照度 ÷ 户外开阔处的照度</p>
+      <div class="field"><label>走廊透光率 %</label><input id="measuredPct" type="number" step="1" value="${Math.round((S.state.site.corridorLight ?? 0.18) * 100)}">
+        <span class="hint">例：户外 20000 lux、花盆处 6000 lux → 填 30</span></div>
+      <div class="actions" style="margin-top:2px">
+        <button class="btn ghost sm" data-act="dismissMeasure">先不填</button>
+      </div>
+      <button class="btn wide" data-act="saveMeasured" style="margin-top:8px">保存并重算</button>`);
+  }
+  if (task.kind === 'water') {
+    const p = plantById(task.plantId);
+    if (!p) return;
+    // 补勾过去的日子：用「那天该浇的时间」记账（不是现在），否则耗水会被算歪；
+    // 而且只允许把基准往后推，补勾更早的日子不会把 lastWateredAt 往回拨
+    const at = task.date < S.today ? `${task.date}T${task.time || '08:00'}:00` : iso();
+    const prev = p.care?.lastWateredAt ? new Date(p.care.lastWateredAt).getTime() : 0;
+    if (new Date(at).getTime() >= prev) {
+      const cap = S.plans[p.id].capacity;
+      p.care.lastWateredAt = at;
+      p.care.lastWaterMl = cap;
+      p.care.lastWaterToDrain = true;
+      (S.state.logs ||= []).unshift({
+        id: 'l' + Date.now(), plantId: p.id, type: '浇透', at, amountMl: cap,
+        backfill: task.date < S.today,
+      });
+      toast(task.date < S.today
+        ? `${p.name}：${M.monthDay(task.date)} 那次补上了，重算`
+        : `${p.name} 浇透了，这次的水够它用几天会重新算`, 'ok');
     }
   }
+}
+
+async function toggleTask(id) {
+  const task = S.tasks.find((t) => t.id === id);
+  if (!task) return;
+  await applyTaskState(task);
+  await saveState();
+  compute();
+  render();
+}
+
+/** 历史清单里的补勾：任务不在 S.tasks 里，用当天的快照造一个 */
+async function toggleHistoryTask(id, date) {
+  const items = dayItems(date);
+  const found = items.find((x) => x.id === id);
+  const kind = found?.kind || M.taskIdParts(id).kind || '';
+  await applyTaskState(found || { id, date, kind, time: '' });
   await saveState();
   compute();
   render();
@@ -1057,7 +1848,7 @@ function applySoilReading(p, dry) {
   const plan = S.plans[p.id];
   const last = new Date(p.care.lastWateredAt).getTime();
   const days = Math.max(0.5, (Date.now() - last) / 86400000);
-  const used = p.care.lastWaterMl || plan.amount;
+  const used = p.care.lastWaterMl || plan.capacity;
   const observedRate = used / days;
   const modelRate = Math.max(1, plan.dailyUseToday);
   const ratio = clamp(observedRate / modelRate, 0.55, 1.8);
@@ -1091,8 +1882,30 @@ function openSoilSheet(plantId) {
     <div class="stack" style="gap:8px">
       <button class="btn wide" data-act="soilRecord" data-plant="${plantId}" data-dry="1">${ICON.check} 下半截是干的</button>
       <button class="btn ghost wide" data-act="soilRecord" data-plant="${plantId}" data-dry="0">下半截还带湿土</button>
+      <button class="btn ghost wide" data-act="resetToDry" data-plant="${plantId}">土已经干透 · 从下一次浇透重新记账</button>
     </div>
-    <div class="note" style="margin-top:12px">记完马上重算：干的会立刻把这次浇水提到今天，湿的会往后推 2 天左右；同时按“这轮实际耗水速度”校正日耗系数。</div>`);
+    <div class="note" style="margin-top:12px">前两条记完马上重算：干的会立刻把这次浇水提到最近一个到岗日，湿的会往后推；同时按“这轮实际耗水速度”校正日耗系数。<br>
+    第三条只记「现在土是干的」、把起点重设，<b>不动</b>耗水系数——上次没浇透、或者刚开始用这个看板时点它，之后第一次浇透就是新基准。</div>`);
+}
+
+/**
+ * 重设起点：只认「现在土干了」，把盆里剩水清零，下一次浇透当成正式基准。
+ * 不碰 calibration.factor —— 之前那轮可能根本没浇透，拿它去校正耗水只会越算越歪。
+ */
+async function resetToDry(plantId) {
+  const p = plantById(plantId);
+  p.care.lastSoilDryAt = iso();
+  delete p.care.lastSoilWetAt;
+  p.care.baselineResetAt = iso();
+  (S.state.logs ||= []).unshift({
+    id: 'l' + Date.now(), plantId, type: '探土', at: iso(), note: '干 · 重设起点',
+  });
+  closeSheet();
+  await saveState();
+  compute();
+  render();
+  const plan = S.plans[plantId];
+  toast(`${p.name}：按干透记，下一次浇透 ${M.monthDay(plan.dutyDate)} ${plan.dutyTime}，从那天重新算`, 'ok');
 }
 
 /** 竹签读数：干 / 湿。既记录，也校正模型 */
@@ -1142,40 +1955,41 @@ async function skipTask(taskId, reason) {
   render();
 }
 
-async function doWater(plantId, amountOverride) {
+async function doWater(plantId) {
   const p = plantById(plantId);
-  const amount = amountOverride ?? S.plans[plantId].amount;
+  const amount = S.plans[plantId].capacity;   // 浇透后土里能存给根用的水
   p.care.lastWateredAt = iso();
   p.care.lastWaterMl = amount;
-  (S.state.logs ||= []).unshift({ id: 'l' + Date.now(), plantId, type: '浇水', at: iso(), amountMl: amount });
+  p.care.lastWaterToDrain = true;
+  (S.state.logs ||= []).unshift({ id: 'l' + Date.now(), plantId, type: '浇透', at: iso(), amountMl: amount });
   await saveState();
   compute();
   render();
-  toast(`${p.name}：${amount} ml 已记录`, 'ok');
+  const next = S.plans[plantId];
+  toast(`${p.name}：浇透了，按这几天的天气约 ${next.intervalDays} 天后再浇`, 'ok');
 }
 
 function openWaterSheet(plantId) {
   const p = plantById(plantId);
   const plan = S.plans[plantId];
-  const dr = p.pot.drainage;
+  const store = `盆土吸饱后能存住约 <b>${plan.capacity} ml</b> 给根用，够 ${plan.intervalDays} 天`;
+  const wt = plan.dutyTime || plan.nextTime;
+  const wd = plan.dutyDate || plan.nextDate;
+  const wl = Number.isFinite(plan.dutyDaysLeft) ? plan.dutyDaysLeft : plan.daysLeft;
+  const when = wl <= 0
+    ? `这盆水已经用完，今天（${wt}）就该浇`
+    : `现在还剩 ${plan.leftPct}%，预计 ${M.monthDay(wd)} ${wt} 再浇${plan.dutyShifted ? '（到期日不在实验室，已挪到最近一个到岗日）' : ''}`;
   openSheet(`<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">${plantAvatar(p, 36)}<div><h3 style="margin:0">给 ${esc(p.name)} 浇水</h3></div></div>
-    <p class="sub">盆容积 ${Math.round(M.potVolumeMl(p.pot))} ml · 满盆 ${plan.capacity} ml · 本次 ${plan.amount} ml ≈ ${plan.targetWetDays} 天的耗水</p>
+    <p class="sub">浇到底孔出水就行，不用数毫升。${store}；${when}。</p>
     <div class="card tight" style="box-shadow:none;background:var(--paper-2);margin-bottom:14px">
-      <div style="font-size:13px;line-height:1.6">
-        ${dr === 'no'
-          ? `无孔盆只能分次给：<b>${plan.amount} ml</b>（满盆的 ${Math.round(plan.refill * 100)}%），分 3 次沿盆边慢浇，间隔 5 分钟。真正的解法是套盆：连土球扣进有孔塑料盆，取出浇透 ${plan.capacity} ml、沥干、放回。`
-          : dr === 'yes'
-            ? (plan.amount < plan.capacity
-              ? `有孔盆：分两遍慢浇共 <b>${plan.amount} ml</b>——这是"${plan.targetWetDays} 天的量"，不会出水，正常。若倒到一半盆底就开始出水，说明土还湿，停手。${p.pot.saucer ? '15 分钟内倒掉托盘水' : '没托盘就垫个盘子或搬到水槽'}。`
-              : `有孔盆：分两遍慢浇共 <b>${plan.amount} ml</b>，盆底出水即停，${p.pot.saucer ? '15 分钟内倒掉托盘水' : '没托盘就垫个盘子或搬到水槽'}。`)
-            : `排水还没确认，先按满盆的 ${Math.round(plan.refill * 100)}%（<b>${plan.amount} ml</b>）给：确认有孔就可浇到出水，没孔就只能这么多。`}
-      </div>
+      <div style="font-size:13px;line-height:1.6">${M.wateringHowTo(p)}</div>
     </div>
-    <div class="field"><label>实际浇了多少 ml</label><input id="waterAmt" type="number" value="${plan.amount}"></div>
-    ${dr === 'no' ? `<div class="note" style="margin-bottom:12px;padding:9px 11px;background:#eef4ef;border-radius:10px">
-      换成有孔盆（或打一个孔）之后：<b>${Math.round(M.availableWaterMl(p) / 10) * 10} ml，约 ${Math.max(3, Math.round(M.availableWaterMl(p) / Math.max(1, plan.dailyUseToday)))} 天一次</b>。
-      ${p.name}要的是"浇透再等干"，不是小口抿——现在这 80 ml 是被盆逼出来的，不是它想要的。</div>` : ''}
-    <button class="btn wide" data-act="confirmWater" data-plant="${plantId}">确认浇水</button>`);
+    <div class="note" style="margin-bottom:12px;padding:9px 11px;background:#eef4ef;border-radius:10px;font-size:12.5px;line-height:1.65">
+      <b>为什么这个点浇：${wt}</b>（${(plan.dutyWindow || plan.nextWindow).start}–${(plan.dutyWindow || plan.nextWindow).end} 之间都行）
+      <div style="margin-top:4px">${(plan.dutyWhy || plan.nextTimeWhy || []).slice(0, 5).map((r) => `· ${esc(r)}`).join('<br>')}</div>
+    </div>
+    <button class="btn wide" data-act="confirmWater" data-plant="${plantId}">浇透了（盆底出过水）</button>
+    <div class="note" style="margin-top:8px;text-align:center">点一下 = 记一次「浇透」，模型按盆里存住的水重新算下次</div>`);
 }
 
 function openPlantDetail(plantId) {
@@ -1200,15 +2014,20 @@ function openPlantDetail(plantId) {
         <option value="balcony" ${p.care.place === 'balcony' ? 'selected' : ''}>阳台（露天）</option>
         <option value="corridor" ${p.care.place === 'corridor' ? 'selected' : ''}>走廊（靠门/窗）</option>
         <option value="indoor" ${p.care.place === 'indoor' ? 'selected' : ''}>室内</option></select></div>
-      <div class="field"><label>每次给水比例</label><select id="pdRefill">
-        <option value="" ${!Number.isFinite(p.pot.refill) ? 'selected' : ''}>自动（有孔100% / 待确认60% / 无孔45%）</option>
-        <option value="1" ${p.pot.refill === 1 ? 'selected' : ''}>100% 满盆浇透</option>
+      <div class="field"><label>浇水钟点</label><select id="pdWaterMode">
+        <option value="auto" ${p.schedule?.waterMode !== 'fixed' ? 'selected' : ''}>按天气算（推荐）</option>
+        <option value="fixed" ${p.schedule?.waterMode === 'fixed' ? 'selected' : ''}>固定时刻</option></select></div>
+      <div class="field"><label>固定时刻</label><input id="pdWaterTime" type="time" value="${esc(p.schedule?.water || S.plans[p.id].nextTime)}">
+        <span class="hint">选了「固定时刻」才用这个</span></div>
+      <div class="field"><label>无孔盆给水比例</label><select id="pdRefill">
+        <option value="" ${!Number.isFinite(p.pot.refill) ? 'selected' : ''}>自动（有孔一律浇透 / 无孔 45%）</option>
+        <option value="1" ${p.pot.refill === 1 ? 'selected' : ''}>100% 满盆</option>
         <option value="0.75" ${p.pot.refill === 0.75 ? 'selected' : ''}>75%</option>
         <option value="0.6" ${p.pot.refill === 0.6 ? 'selected' : ''}>60%</option>
         <option value="0.45" ${p.pot.refill === 0.45 ? 'selected' : ''}>45%</option></select></div>
     </div>
     <div class="field"><label>备注</label><textarea id="pdNotes" rows="2">${esc(p.notes || '')}</textarea></div>
-    <div class="note" style="margin-bottom:12px">满盆浇透 ${S.plans[p.id].capacity} ml；按当前设置每次给 ${S.plans[p.id].amount} ml，约 ${S.plans[p.id].daysLeft} 天一次。</div>
+    <div class="note" style="margin-bottom:12px">浇透后盆里能存 ${S.plans[p.id].capacity} ml（≈ ${S.plans[p.id].intervalDays} 天的耗水）；下次 ${M.monthDay(S.plans[p.id].dutyDate || S.plans[p.id].nextDate)} ${S.plans[p.id].dutyTime || S.plans[p.id].nextTime}。浇到底孔出水即可，不用数毫升。</div>
     <button class="btn wide" data-act="savePlant" data-plant="${plantId}">保存</button>`);
 }
 
@@ -1309,9 +2128,12 @@ async function analyze(photoId) {
     rain7: days.reduce((a, d) => a + (d.precip || 0), 0).toFixed(1),
     et07: days.reduce((a, d) => a + (d.et0 || 0), 0).toFixed(2),
     place: p.care.place === 'corridor' ? '走廊' : '阳台',
+    lightRoutine: suns[0]?.tripHours
+      ? `走廊散射，${suns[0].tripActual ? '按实际搬动' : '按计划'} ${tripSpanText(suns[0])} 在${suns[0].tripLabel}（今日总光量 ${suns[0].dli}）`
+      : '走廊散射，没有直射',
     potDia: p.pot.diaCm,
     drainage: p.pot.drainage === 'yes' ? '有孔' : p.pot.drainage === 'no' ? '无孔' : '未知',
-    sunHours7: suns.reduce((a, s) => a + s.directHours, 0),
+    sunHours7: suns.reduce((a, s) => a + (s.tripHours || s.directHours), 0),
     dli7: (suns.reduce((a, s) => a + s.dli, 0) / 7).toFixed(1),
     stage: p.traits.bloom && p.traits.stage === 'bloom' ? '花期（满苞）' : '营养生长',
     ts: ph.at?.slice(0, 16).replace('T', ' '),
@@ -1389,6 +2211,26 @@ function exportIcs() {
 
 /* ══════════════════════════════════════════════════════ 事件 */
 document.addEventListener('click', async (e) => {
+  const nb = e.target.closest('[data-act="nextBanner"]');
+  if (nb) {
+    const cur = getCurrentBanner();
+    // 节日/节气图没有 season，就回到日历季节；四季图则留在它自己那一季里换
+    const pool = seasonPool(cur.season || currentSeason());
+    if (pool.length) {
+      const i = pool.findIndex((b) => b.id === cur.id);
+      S.bannerIdx = CAMPUS_BANNERS.indexOf(pool[(i + 1) % pool.length]);
+      render();
+    }
+    return;
+  }
+
+  const sb = e.target.closest('[data-act="setBanner"]');
+  if (sb) {
+    S.bannerIdx = Number(sb.dataset.idx);
+    render();
+    return;
+  }
+
   const go = e.target.closest('[data-go]');
   if (go) { S.route = go.dataset.go; location.hash = '#/' + S.route; render(); window.scrollTo(0, 0); return; }
 
@@ -1419,7 +2261,7 @@ document.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-act]');
   if (!btn) return;
   const act = btn.dataset.act;
-  const WRITE = ['toggle','skip','skipReason','confirmWater','saveSite','saveSettings','savePlant','saveVision','testVision','exportIcs','calAdjust','createPlant','delPhoto','notifyPerm','saveAzimuth','analyze','saveMeasured'];
+  const WRITE = ['toggle','skip','skipReason','confirmWater','saveSite','saveSettings','saveWeekend','savePlant','saveVision','testVision','exportIcs','calAdjust','createPlant','delPhoto','notifyPerm','saveAzimuth','analyze','saveMeasured','dismissMeasure','move','resetToDry','saveMoveTime'];
   if (S.readonly && WRITE.includes(act)) {
     toast('只读模式：先输入口令', 'err');
     openTokenSheet();
@@ -1432,13 +2274,13 @@ document.addEventListener('click', async (e) => {
     case 'skip': return openSkip(btn.dataset.task);
     case 'soil': return soilCheck(btn.dataset.task, btn.dataset.dry === '1');
     case 'soilRecord': return soilRecord(btn.dataset.plant, btn.dataset.dry === '1');
+    case 'resetToDry': return resetToDry(btn.dataset.plant);
     case 'soilSheet': return openSoilSheet(btn.dataset.plant);
     case 'skipReason': return skipTask(btn.dataset.task, btn.dataset.reason);
     case 'water': return openWaterSheet(plantId);
     case 'confirmWater': {
-      const amt = Number($('#waterAmt')?.value) || S.plans[plantId].amount;
       closeSheet();
-      return doWater(plantId, amt);
+      return doWater(plantId);
     }
     case 'photoFor': return pickPhoto(plantId);
     case 'plantDetail': return openPlantDetail(plantId);
@@ -1452,6 +2294,38 @@ document.addEventListener('click', async (e) => {
       return applyToken(v);
     }
     case 'wxSpot': { S.wxSpot = btn.dataset.spot; render(); return; }
+    case 'calPrev': S.calMonth = shiftMonth(calMonthInfo().key, -1); render(); return;
+    case 'calNext': S.calMonth = shiftMonth(calMonthInfo().key, 1); render(); return;
+    case 'calDay': return openDaySheet(btn.dataset.date);
+    case 'toggleDay': {
+      const date = btn.dataset.date;
+      await toggleHistoryTask(btn.dataset.task, date);
+      openDaySheet(date);
+      return;
+    }
+    case 'laterAll': {
+      const rows = S.tasks.filter((t) => t.date > S.today);
+      openSheet(`<h3>接下来要做的事</h3><p class="sub">未来 ${Math.max(1, new Set(rows.map((r) => r.date)).size)} 天 · 共 ${rows.length} 件</p>
+        <div class="hist-list">${rows.map((r) => `<div class="hist-row">
+          <span class="hist-time">${M.monthDay(r.date).replace('月', '/').replace('日', '')}</span>
+          <span class="hist-main"><b>${esc(r.title)}</b><span>${M.weekdayCN(r.date)} ${esc(r.time)} · ${esc(KIND_META[r.kind]?.label || '')}</span></span>
+        </div>`).join('') || '<div class="note">没有排到的事</div>'}</div>`);
+      return;
+    }
+    case 'move': return recordMove(btn.dataset.to);
+    case 'moveTime': return openMoveTimeSheet();
+    case 'saveMoveTime': {
+      const v = $('#moveAtIn')?.value;
+      const at = new Date(v || '');
+      if (!v || !Number.isFinite(at.getTime())) return toast('时间不对', 'err');
+      const log = S.state.site?.moveLog || [];
+      const last = log[log.length - 1];
+      if (!last) return;
+      last.at = at.toISOString();
+      await saveState(); compute(); closeSheet(); render();
+      toast('搬动时间已改，光量重算了', 'ok');
+      return;
+    }
     case 'saveTrip': {
       const site = S.state.site;
       const az = Number($('#tripAz').value);
@@ -1475,6 +2349,12 @@ document.addEventListener('click', async (e) => {
       S.state.site.azimuthVerified = true;
       await saveState(); toast('朝向已保存', 'ok'); render(); return;
     }
+    case 'dismissMeasure': {
+      S.state.site.lightMeasured = true;
+      await saveState(); closeSheet(); compute(); render();
+      toast('好，测光提醒不再出现；想填随时去设置里改走廊透光率');
+      return;
+    }
     case 'saveMeasured': {
       const pct = Number($('#measuredPct').value);
       if (!Number.isFinite(pct) || pct < 1 || pct > 100) return toast('填 1–100 之间的数', 'err');
@@ -1482,6 +2362,44 @@ document.addEventListener('click', async (e) => {
       S.state.site.lightMeasured = true;
       await saveState(); compute(); closeSheet(); render();
       toast(`走廊透光率已设为 ${Math.round(pct)}%，全部重算`, 'ok');
+      return;
+    }
+    case 'savePlaces': {
+      const site = S.state.site;
+      const num = (id, def) => { const v = Number($('#' + id)?.value); return Number.isFinite(v) ? v : def; };
+      site.corridorLight = clamp(num('siteCorridor', 37) / 100, 0.03, 0.8);
+      site.azimuth = num('siteAz', site.azimuth);
+      site.parapetCm = num('siteParapet', site.parapetCm);
+      site.potTopCm = num('sitePotTop', site.potTopCm);
+      site.depthCm = num('siteDepth', site.depthCm);
+      site.parapetType = $('#siteParapetType')?.value || 'solid';
+      site.covered = $('#siteCovered')?.value === 'yes';
+      const wf = ($('#siteWaterFrom')?.value || '').trim();
+      const wto = ($('#siteWaterTo')?.value || '').trim();
+      site.waterWindow = {
+        from: /^\d{1,2}:\d{2}$/.test(wf) ? wf : '08:00',
+        to: /^\d{1,2}:\d{2}$/.test(wto) ? wto : '19:00',
+      };
+      site.azimuthVerified = true;
+      const enabled = $('#tripEnabled')?.value === '1';
+      if (!enabled) {
+        if (site.dayTrip) site.dayTrip.enabled = false;
+      } else {
+        site.dayTrip = {
+          label: '西阳台', parapetCm: 110, potTopCm: 45, depthCm: 70,
+          leadMin: 20, lagMin: 15, sideWallM: 2,
+          ...(site.dayTrip || {}),
+          enabled: true,
+          covered: true,
+          azimuth: num('tripAz', 270),
+          parapetType: $('#tripParapet')?.value || 'railing',
+          roofHeightCm: num('tripRoof', 230),
+          diffuse: clamp(num('tripDiffuse', 60) / 100, 0.05, 1),
+          direct: 1,
+        };
+      }
+      await saveState(); compute(); render();
+      toast('三个地点已保存', 'ok');
       return;
     }
     case 'saveSite': {
@@ -1492,10 +2410,24 @@ document.addEventListener('click', async (e) => {
       s.depthCm = Number($('#siteDepth').value) || s.depthCm;
       s.covered = $('#siteCovered').value === 'yes';
       s.parapetType = $('#siteParapetType')?.value || 'solid';
+      const nl = Number($('#siteNightLux')?.value);
+      s.nightLux = Number.isFinite(nl) && nl >= 0 ? nl : null;
       const cl = Number($('#siteCorridor').value);
       if (Number.isFinite(cl) && cl > 0) s.corridorLight = Math.min(0.6, Math.max(0.03, cl / 100));
       s.azimuthVerified = true;
       await saveState(); compute(); toast('几何已保存', 'ok'); render(); return;
+    }
+    case 'saveWeekend': {
+      const site = S.state.site;
+      const warm = Number($('#wkWarm')?.value);
+      if (Number.isFinite(warm)) site.corridorWarmC = Math.max(0, Math.min(15, warm));
+      const below = Number($('#wkRoomBelow')?.value);
+      if (Number.isFinite(below) && below >= 0) site.roomMoveBelowC = Math.max(0, Math.min(12, below));
+      // 老的周末几何参数已经没人用了，顺手清掉
+      if (site.weekend) delete site.weekend.places;
+      await saveState(); compute(); render();
+      toast(`判冷已更新：走廊 +${site.corridorWarmC ?? 5}℃，低于耐受线 ${site.roomMoveBelowC ?? 5}℃ 才搬房间`, 'ok');
+      return;
     }
     case 'saveSettings': {
       S.state.settings.photoEveryDays = Number($('#setPhoto').value) || 7;
@@ -1522,6 +2454,10 @@ document.addEventListener('click', async (e) => {
       p.care.rainExposed = place === 'balcony';
       const rf = $('#pdRefill').value;
       if (rf) p.pot.refill = Number(rf); else delete p.pot.refill;
+      p.schedule = p.schedule || {};
+      p.schedule.waterMode = $('#pdWaterMode').value === 'fixed' ? 'fixed' : 'auto';
+      const wt = ($('#pdWaterTime').value || '').trim();
+      if (/^\d{1,2}:\d{2}$/.test(wt)) p.schedule.water = wt;
       p.notes = $('#pdNotes').value;
       await saveState(); compute(); closeSheet(); toast('参数已更新', 'ok'); return;
     }
@@ -1589,7 +2525,7 @@ document.addEventListener('click', async (e) => {
         id, name: $('#npName').value || '新植物', species: $('#npSpecies').value || '', emoji: '🌱',
         pot: { diaCm: Number($('#npDia').value) || 12, bottomCm: (Number($('#npDia').value) || 12) * 0.77, heightCm: (Number($('#npDia').value) || 12) * 0.9, drainage: 'unknown', saucer: false, cachepot: false, media: 'coir', rootBallRatio: 0.85 },
         traits: { cam: false, baseDailyMl: Number($('#npUse').value) || 30, minNightC: 5, lightNeedDli: 8, lightMinDli: 4, anoxiaDays: 5, storageDays: 5, bloom: false, stage: 'veg', rainSensitive: true },
-        schedule: { check: '07:00', prep: '21:00', water: '08:30', moveOut: '07:30', moveIn: '17:00' },
+        schedule: { check: '07:00', prep: '21:00', waterMode: 'auto', moveOut: '07:30', moveIn: '17:00' },
         care: { lastWateredAt: iso(), lastWaterMl: 0, place: 'balcony', rainExposed: true },
         calibration: { factor: 1, samples: 0 },
         notes: '', createdAt: iso(),
@@ -1766,18 +2702,31 @@ function tick() {
 }
 let lastPending = 0;
 
-/* 前端文件更新了就自动刷新，避免一直跑旧逻辑 */
+/* 前端文件更新了，提示一下就够——不强制刷新，避免编辑中被反复打断 */
 let appVer = null;
+let verWarned = false;
 async function checkVersion() {
   try {
     const r = await fetch('/api/version', { cache: 'no-store' });
     const { v } = await r.json();
-    if (appVer && v !== appVer) { location.reload(); return; }
-    appVer = v;
+    if (appVer && v !== appVer && !verWarned) {
+      verWarned = true;
+      const host = document.getElementById('toast');
+      if (host) {
+        const el = document.createElement('div');
+        el.className = 'toast ok';
+        el.style.cursor = 'pointer';
+        el.textContent = '程序更新了，点这里刷新';
+        el.onclick = () => location.reload();
+        host.appendChild(el);
+      }
+      return;
+    }
+    if (!appVer) appVer = v;
   } catch { /* 忽略 */ }
 }
-checkVersion();
-setInterval(checkVersion, 45000);
+setTimeout(checkVersion, 8000);
+setInterval(checkVersion, 120000);
 
 setInterval(tick, 30000);
 setInterval(() => { if (!S.sheet && !document.activeElement?.matches('input,textarea,select')) loadAll({ silent: true }); }, 60000);
@@ -1815,7 +2764,7 @@ function openTokenSheet() {
       <input id="tokInput" inputmode="numeric" autocomplete="off" placeholder="10 位数字" value="${esc(SAVED_INPUT)}">
       <span class="hint">口令只存在本机浏览器里，不会发给别人。</span></div>
     <button class="btn wide" data-act="saveToken">确认</button>
-    <div class="note" style="margin-top:10px">没有口令？在 Mac 上跑 <span class="mono">cat ~/Documents/杭电研/tian/plant-care/.token   # 项目根目录下的 .token</span></div>`);
+    <div class="note" style="margin-top:10px">没有口令？在 Mac 上跑 <span class="mono">cat ~/Code/花花和松松/.token   # 项目根目录下的 .token</span></div>`);
 }
 
 async function applyToken(t) {
