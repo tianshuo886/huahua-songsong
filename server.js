@@ -20,6 +20,7 @@ const DATA = path.join(ROOT, 'data');
 const PHOTO_DIR = path.join(DATA, 'photos');
 const STATE_FILE = path.join(DATA, 'state.json');
 const CONFIG_FILE = path.join(DATA, 'config.json');
+const WEATHER_CACHE = path.join(DATA, 'weather-cache.json');
 const PORT = Number(process.env.PORT || 7788);
 // 设了 PLANT_TOKEN 就开启写保护：GET 随便看，改数据要口令
 const TOKEN = (() => {
@@ -246,13 +247,58 @@ const stamp = () => new Date().toISOString();
 /* ------------------------------------------------------------------ 天气 */
 
 const weatherCache = new Map();
+const weatherInflight = new Map();
 const WEATHER_TTL = 20 * 60 * 1000;
 
-async function getWeather(lat, lon, tz) {
-  const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
-  const hit = weatherCache.get(key);
-  if (hit && Date.now() - hit.at < WEATHER_TTL) return { ...hit.data, cached: true };
+/** 三家全球模式：单个模式对本地夜间低温常常偏冷，取中位数压掉极值 */
+const TEMP_MODELS = ['ecmwf_ifs025', 'gfs_seamless', 'icon_seamless'];
 
+const median = (xs) => {
+  const v = xs.filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = Math.floor(v.length / 2);
+  return v.length % 2 ? Math.round(v[m] * 10) / 10 : Math.round(((v[m - 1] + v[m]) / 2) * 10) / 10;
+};
+
+async function fetchTempMedian(lat, lon, tz) {
+  const u = new URL('https://api.open-meteo.com/v1/forecast');
+  u.searchParams.set('latitude', lat);
+  u.searchParams.set('longitude', lon);
+  u.searchParams.set('timezone', tz || 'Asia/Shanghai');
+  u.searchParams.set('forecast_days', '14');
+  u.searchParams.set('daily', 'temperature_2m_min,temperature_2m_max');
+  u.searchParams.set('models', TEMP_MODELS.join(','));
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 10000);
+  try {
+    const r = await fetch(u, { signal: ctl.signal });
+    if (!r.ok) throw new Error('open-meteo models ' + r.status);
+    return await r.json();
+  } finally { clearTimeout(timer); }
+}
+
+/**
+ * 给主线数据补上 tminMed / tmaxMed（多模式中位数）。
+ * best_match 在这片区域比中央气象台低 4℃ 左右（实测），夜间低温被高估会误判"太冷不能放阳台"。
+ */
+async function withTempMedian(data, lat, lon, tz) {
+  try {
+    const mm = await fetchTempMedian(lat, lon, tz);
+    const at = new Map((mm.daily?.time || []).map((d, i) => [d, i]));
+    const dates = data.daily?.time || [];
+    if (!dates.length || !at.size) return data;
+    const pick = (field, date) => {
+      const i = at.get(date);
+      if (i == null) return null;
+      return median(TEMP_MODELS.map((m) => mm.daily?.[`${field}_${m}`]?.[i]));
+    };
+    data.daily.tminMed = dates.map((d) => pick('temperature_2m_min', d));
+    data.daily.tmaxMed = dates.map((d) => pick('temperature_2m_max', d));
+  } catch { /* 取不到就退回单模型，别让首页卡住 */ }
+  return data;
+}
+
+async function fetchWeather(lat, lon, tz) {
   const u = new URL('https://api.open-meteo.com/v1/forecast');
   u.searchParams.set('latitude', lat);
   u.searchParams.set('longitude', lon);
@@ -267,20 +313,42 @@ async function getWeather(lat, lon, tz) {
   ].join(','));
   u.searchParams.set('hourly', [
     'temperature_2m', 'relative_humidity_2m', 'cloud_cover',
-    'precipitation', 'shortwave_radiation', 'wind_speed_10m',
+    'precipitation', 'shortwave_radiation', 'wind_speed_10m', 'wind_direction_10m',
   ].join(','));
-
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 12000);
   try {
     const r = await fetch(u, { signal: ctl.signal });
     if (!r.ok) throw new Error('open-meteo ' + r.status);
-    const data = await r.json();
-    weatherCache.set(key, { at: Date.now(), data });
-    return { ...data, cached: false };
+    return withTempMedian(await r.json(), lat, lon, tz);
   } finally {
     clearTimeout(t);
   }
+}
+
+/**
+ * 先给缓存，后台刷新。
+ * 首页要等天气才渲染，而 open-meteo 有时要 8–10 秒 —— 不能让每次打开都卡在那儿。
+ */
+async function getWeather(lat, lon, tz) {
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+  const hit = weatherCache.get(key);
+  if (hit && Date.now() - hit.at < WEATHER_TTL) return { ...hit.data, cached: true };
+
+  const refresh = () => {
+    if (weatherInflight.has(key)) return weatherInflight.get(key);
+    const p = fetchWeather(lat, lon, tz)
+      .then((data) => { weatherCache.set(key, { at: Date.now(), data }); return data; })
+      .finally(() => weatherInflight.delete(key));
+    weatherInflight.set(key, p);
+    return p;
+  };
+
+  if (hit) {
+    refresh().catch((e) => console.log('[weather] 后台刷新失败：', e.message));
+    return { ...hit.data, cached: true, stale: true };
+  }
+  return refresh();
 }
 
 /* ------------------------------------------------------------------ 视觉模型 */
@@ -453,9 +521,18 @@ async function handleApi(req, res, url) {
     const lon = Number(url.searchParams.get('lon')) || state.location.lon;
     try {
       const data = await getWeather(lat, lon, state.location.tz);
+      // 顺手存一份，断网时还能用
+      try { await writeFile(WEATHER_CACHE, JSON.stringify(data)); } catch { /* 忽略 */ }
       return json(res, 200, data);
     } catch (e) {
-      return json(res, 502, { error: '取天气失败：' + e.message });
+      try {
+        const old = JSON.parse(await readFile(WEATHER_CACHE, 'utf8'));
+        old.stale = true;
+        old.staleNote = '实时天气取不到，用的是上次成功的预报';
+        return json(res, 200, old);
+      } catch {
+        return json(res, 502, { error: '取天气失败：' + e.message });
+      }
     }
   }
 
