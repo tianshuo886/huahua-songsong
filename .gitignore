@@ -23,3 +23,6 @@ public/img/_source/
 
 # 未被选用的备选图标
 public/icons/candidates/
+
+# Sites 项目配置（含项目 ID，本机用，不进版本库）
+.openai/

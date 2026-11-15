@@ -18,7 +18,7 @@ launchctl kickstart -k gui/$(id -u)/com.shentianshuo.plantcare
 地址：
 - 本机 `http://127.0.0.1:7788`
 - 局域网 `http://<本机局域网 IP>:7788`（同一 WiFi）
-- 外网 `https://<你的 tailnet 域名>`（Tailscale serve，需要 Tailscale 在跑）
+- 外网 `https://<主机名>.<你的 tailnet>.ts.net`（Tailscale serve，需要 Tailscale 在跑）
 
 ## 口令与数据
 
@@ -114,13 +114,13 @@ public/img/_source/<组>/  原始大图（不进 Git，仅留底）
 
 ## Sites 云站点
 
-- 线上地址：`https://<你的站点域名>`；Sites 项目 ID 在 `.openai/hosting.json`。
+- 线上地址部署后由平台分配；Sites 项目 ID 在 `.openai/hosting.json`（本机配置，**不进版本库**）。
 - Sites 项目复用这套前端；`worker/index.js` 与 `server.js` 的接口契约要保持一致，改 `/api` 时两边一起改。
 - 发布前跑 `npm run build:sites`。产物是 `dist/client`、`dist/server/index.js`、`dist/.openai/hosting.json`。
 - `dist/`、`site.tar.gz` 不进版本库；`data/` 仍是本地运行时数据，不随站点发布。
 - 线上持久化在 D1，不读写本地 `data/`。站点第一次初始化可读 Sites 环境变量 `SEED_STATE_JSON`，之后以 D1 为准。
 - `.openai/hosting.json` 只放 `project_id` 与逻辑 `d1`/`r2` 绑定；密钥和运行时变量只在 Sites 环境配置。
-- Sites 源码仓库：`https://<Sites 源码仓库>`，发布分支 `main`。
+- Sites 源码仓库由平台的代码托管提供，发布分支 `main`（地址见 `.openai/hosting.json` 所在项目的控制台）。
 - 更新发布：`npm run build:sites` → 以 Sites 远端 `main` 为父提交做源码快照并推送 → `npm run package:sites` →
   `save_version_and_deploy_private` 同一 `project_id` → 轮询 `get_deployment_status`。不要把短时写入凭据写进远程 URL 或 Git 配置。
 

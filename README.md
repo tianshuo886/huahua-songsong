@@ -1,6 +1,6 @@
 # 花花和松松
 
-> 一盆重瓣黄的长寿花，一盆小叶罗汉松，住在钱塘的一间朝北走廊里。
+> 一盆重瓣黄的长寿花，一盆小叶罗汉松，住在杭州一间朝北的走廊里。
 
 一个替它们看天、算水、记花事的本机小站。手绘插画由另一条会话生成，前端做了尺寸适配。
 
@@ -286,15 +286,15 @@ http://127.0.0.1:7788/?t=你的口令
 
 改口令：编辑 `.token`（随便一串），重启服务即可。
 
-## 十、Tailscale 私网访问（自己用，已配好）
+## 十、Tailscale 私网访问（可选）
 
-这台 Mac 已在 tailnet 里：
+想在外网也能打开、又不想把端口暴露到公网，可以用 Tailscale：
 
-- 主机名 `5988`，IPv4 `100.x.y.z`
-- 花花和松松：`http://<你的 tailnet 域名>:7788`（推荐）或 `http://100.x.y.z:7788`
+1. Mac 和手机各装 Tailscale，登同一个账号；
+2. Mac 上 `tailscale serve --bg 7788`（或直接让手机连同一个 tailnet）；
+3. 用 `tailscale status` 查到的地址打开，形如 `http://<主机名>.<你的 tailnet>.ts.net:7788`。
 
-手机装 Tailscale、登同一个账号（erren364@gmail.com），任何网络下都能直接打开，
-不需要公网暴露、不需要域名、不需要开着 Cloudflare 隧道。
+手机连上 tailnet 后，任何网络下都能直接打开，不需要公网 IP、不需要域名、不需要 Cloudflare 隧道。
 
 **登录自启**：`~/Library/LaunchAgents/com.shentianshuo.plantcare.plist` 已写好，
 下次登录会自动 `node server.js`。想立刻启用：
@@ -319,7 +319,7 @@ sudo /Applications/Tailscale.app/Contents/MacOS/Tailscale up --advertise-exit-no
 线上版不是静态截图：`worker/index.js` 在 Sites 上提供与本地一致的 `/api`，状态、配置、
 天气缓存和照片都存在站点的 D1 数据库里。本地 `server.js` 不受影响，仍然可以继续用。
 
-站点地址：`https://<你的站点域名>`（当前为仅本人可访问）
+站点地址：部署后会得到一个站点域名（默认仅本人可访问），换成你自己的即可。
 
 ```bash
 npm run build:sites       # 生成 Sites 需要的 dist/

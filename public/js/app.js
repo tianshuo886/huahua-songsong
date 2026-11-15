@@ -1566,7 +1566,7 @@ function viewSettings() {
     <div class="card">
       <div class="card-head"><div class="card-title">装到手机桌面</div></div>
       <div class="note" style="line-height:1.75">
-        <b>iPhone</b>：用 Safari 打开 <span class="mono">https://<你的 tailnet 域名></span> → 底部「分享」→「添加到主屏幕」。<br>
+        <b>iPhone</b>：用 Safari 打开 <span class="mono">${esc(location.origin)}</span> → 底部「分享」→「添加到主屏幕」。<br>
         <b>安卓</b>：用 Chrome 打开同一地址 → 右上角菜单 →「安装应用」。<br>
         装完是从桌面直接进，没有地址栏，图标是「莳」。
       </div>
